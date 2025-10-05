@@ -1,0 +1,9 @@
+Flask
+psutil
+pynput
+matplotlib
+pandas
+numpy
+seaborn
+openpyxl
+pywin32
