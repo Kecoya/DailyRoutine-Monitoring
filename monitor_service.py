@@ -145,22 +145,25 @@ class ActivityMonitor:
             # 获取系统资源使用
             cpu_usage, memory_usage = self.get_system_usage()
             
-            # 标准化活动指标（基于每分钟的期望值）
-            # 假设正常工作状态：
-            # - 鼠标移动约1000-5000像素/分钟
-            # - 鼠标点击约10-50次/分钟
-            # - 键盘按键约50-300次/分钟
-            # - 窗口切换约0-10次/分钟
+            # 标准化活动指标（基于MONITOR_INTERVAL的期望值）
+            # 计算每秒的期望值，然后乘以实际间隔
+            interval_factor = MONITOR_INTERVAL / 60  # 相对于1分钟的系数
+            
+            # 假设正常工作状态（每分钟）：
+            # - 鼠标移动约1000-5000像素
+            # - 鼠标点击约10-50次
+            # - 键盘按键约50-300次
+            # - 窗口切换约0-10次
             
             mouse_activity_score = min(100, (
-                (self.mouse_distance / 5000 * 50) +
-                (self.mouse_clicks / 50 * 30) +
-                (self.mouse_moves / 500 * 20)
+                (self.mouse_distance / (5000 * interval_factor) * 50) +
+                (self.mouse_clicks / (50 * interval_factor) * 30) +
+                (self.mouse_moves / (500 * interval_factor) * 20)
             ))
             
-            keyboard_activity_score = min(100, self.keyboard_presses / 300 * 100)
+            keyboard_activity_score = min(100, self.keyboard_presses / (300 * interval_factor) * 100)
             
-            window_activity_score = min(100, self.window_switches / 10 * 100)
+            window_activity_score = min(100, self.window_switches / (10 * interval_factor) * 100)
             
             system_activity_score = (cpu_usage + memory_usage) / 2
             
@@ -198,8 +201,8 @@ class ActivityMonitor:
             # 保存到数据库
             self.db.save_activity_record(record)
             
-            logger.info(f"数据已保存 - 忙碌指数: {busy_index:.2f}, "
-                       f"鼠标: {self.mouse_clicks}次点击, "
+            logger.info(f"数据已保存({MONITOR_INTERVAL}s) - 忙碌指数: {busy_index:.2f}, "
+                       f"鼠标: {self.mouse_clicks}次点击/{self.mouse_distance:.0f}px, "
                        f"键盘: {self.keyboard_presses}次按键, "
                        f"窗口切换: {self.window_switches}次")
             
@@ -228,7 +231,7 @@ class ActivityMonitor:
                 
                 # 每小时更新一次每日统计
                 now = datetime.now()
-                if now.minute == 0:  # 每小时的第0分钟
+                if now.minute == 0 and now.second < MONITOR_INTERVAL:  # 每小时的第0分钟
                     self.db.update_daily_stats(now.date())
                 
                 # 等待到下一个监控间隔

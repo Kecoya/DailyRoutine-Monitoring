@@ -78,11 +78,19 @@ class Database:
                 total_mouse_clicks INTEGER DEFAULT 0,
                 total_key_presses INTEGER DEFAULT 0,
                 total_window_switches INTEGER DEFAULT 0,
+                total_mouse_distance REAL DEFAULT 0,
                 average_busy_index REAL DEFAULT 0,
                 max_busy_index REAL DEFAULT 0,
                 work_sessions INTEGER DEFAULT 0
             )
         ''')
+        
+        # 检查并添加 total_mouse_distance 列（兼容旧数据库）
+        cursor.execute("PRAGMA table_info(daily_stats)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'total_mouse_distance' not in columns:
+            cursor.execute('ALTER TABLE daily_stats ADD COLUMN total_mouse_distance REAL DEFAULT 0')
+            logger.info("已添加 total_mouse_distance 列到 daily_stats 表")
         
         # 创建索引以提高查询性能
         cursor.execute('''
@@ -227,27 +235,38 @@ class Database:
             return False
     
     def update_daily_stats(self, date: datetime.date) -> bool:
-        """更新每日统计"""
+        """更新每日统计
+        注意：将第二天凌晨0:00-2:00的活动也计入当天
+        """
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            # 获取当天的所有会话
+            # 定义工作日的实际时间范围：
+            # 当天 00:00:00 到第二天 02:00:00
+            start_of_day = datetime.combine(date, datetime.min.time())
+            next_day = date + timedelta(days=1)
+            end_of_day = datetime.combine(next_day, datetime.min.time()) + timedelta(hours=2)
+            
+            # 获取当天的所有会话（包括跨日的会话）
             cursor.execute('''
                 SELECT 
                     MIN(start_time) as first_boot,
-                    MAX(end_time) as last_shutdown,
+                    MAX(CASE 
+                        WHEN end_time IS NULL THEN NULL
+                        WHEN end_time <= ? THEN end_time
+                        ELSE ?
+                    END) as last_shutdown,
                     COUNT(*) as session_count
                 FROM sessions
-                WHERE session_date = ?
-            ''', (date,))
+                WHERE (session_date = ? OR 
+                       (session_date = ? AND 
+                        strftime('%H', start_time) < '02'))
+            ''', (end_of_day, end_of_day, date, next_day))
             
             session_info = cursor.fetchone()
             
-            # 获取当天的活动统计
-            start_of_day = datetime.combine(date, datetime.min.time())
-            end_of_day = datetime.combine(date, datetime.max.time())
-            
+            # 获取当天的活动统计（包括第二天凌晨2点前的数据）
             cursor.execute('''
                 SELECT 
                     SUM(CASE WHEN is_idle = 0 THEN 1 ELSE 0 END) as active_minutes,
@@ -255,10 +274,11 @@ class Database:
                     SUM(mouse_clicks) as total_clicks,
                     SUM(keyboard_presses) as total_presses,
                     SUM(window_switches) as total_switches,
+                    SUM(mouse_distance) as total_distance,
                     AVG(busy_index) as avg_busy,
                     MAX(busy_index) as max_busy
                 FROM activity_records
-                WHERE timestamp BETWEEN ? AND ?
+                WHERE timestamp >= ? AND timestamp < ?
             ''', (start_of_day, end_of_day))
             
             activity_stats = cursor.fetchone()
@@ -281,8 +301,8 @@ class Database:
                     stat_date, first_boot_time, last_shutdown_time,
                     total_active_minutes, total_idle_minutes, nap_minutes,
                     total_mouse_clicks, total_key_presses, total_window_switches,
-                    average_busy_index, max_busy_index, work_sessions
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_mouse_distance, average_busy_index, max_busy_index, work_sessions
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 date,
                 session_info['first_boot'],
@@ -293,6 +313,7 @@ class Database:
                 activity_stats['total_clicks'] or 0,
                 activity_stats['total_presses'] or 0,
                 activity_stats['total_switches'] or 0,
+                activity_stats['total_distance'] or 0,
                 activity_stats['avg_busy'] or 0,
                 activity_stats['max_busy'] or 0,
                 session_info['session_count'] or 0

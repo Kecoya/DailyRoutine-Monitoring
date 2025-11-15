@@ -20,7 +20,9 @@ os.makedirs(TEMPLATES_DIR, exist_ok=True)
 DATABASE_PATH = os.path.join(DATA_DIR, 'activity.db')
 
 # 监控配置
-MONITOR_INTERVAL = 60  # 监控间隔（秒），每分钟记录一次
+# 注意：鼠标监听器是实时工作的，MONITOR_INTERVAL只影响数据保存频率
+# 鼠标移动距离在每次移动时都会实时累加，不受此间隔影响
+MONITOR_INTERVAL = 60  # 监控间隔（秒），数据保存频率
 IDLE_THRESHOLD = 10 * 60  # 空闲阈值（秒），10分钟无活动视为空闲
 NAP_TIME_START = 13  # 午休开始时间（小时）
 NAP_TIME_END = 14.5  # 午休结束时间（小时）
@@ -50,4 +52,9 @@ HEATMAP_FIGSIZE = (14, 8)
 
 # 数据保留配置
 DATA_RETENTION_DAYS = 365  # 数据保留天数，默认保留一年
+
+# 鼠标距离计算配置
+# 基于典型24寸 1920×1080显示器（宽约53cm）的经验值
+# 可根据实际显示器调整此值
+PIXELS_PER_METER = 5200  # 像素/米（约 1像素 = 0.28mm）
 

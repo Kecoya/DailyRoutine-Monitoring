@@ -1,6 +1,6 @@
 """
-数据分析模块
-生成统计报表和可视化图表
+Data Analysis Module
+Generate statistical reports and visualization charts
 """
 import os
 import logging
@@ -8,37 +8,31 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')  # 使用非GUI后端
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.font_manager import FontProperties
 
+import matplotlib
+import matplotlib.pyplot as plt
+matplotlib.use('Agg')  # Use non-GUI backend
+
+import seaborn as sns
 from database import Database
-from config import CHART_DPI, CHART_FIGSIZE, HEATMAP_FIGSIZE, STATIC_DIR
+from config import CHART_DPI, CHART_FIGSIZE, HEATMAP_FIGSIZE, STATIC_DIR, PIXELS_PER_METER
 
 logger = logging.getLogger(__name__)
 
-# 设置中文字体（Windows）
-try:
-    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']
-    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
-except:
-    logger.warning("无法设置中文字体，图表可能显示异常")
 
-# 设置seaborn样式
+# Set seaborn style
 sns.set_style("whitegrid")
 sns.set_palette("husl")
 
 
 class DataAnalyzer:
-    """数据分析器"""
+    """Data Analyzer"""
     
     def __init__(self):
         self.db = Database()
     
     def get_today_summary(self) -> Dict:
-        """获取今日汇总数据"""
+        """Get today's summary data"""
         today = datetime.now().date()
         stats = self.db.get_daily_stats(today, today)
         
@@ -55,6 +49,11 @@ class DataAnalyzer:
             }
         
         stat = stats[0]
+        
+        # 计算鼠标移动距离（像素 → 米）
+        # 使用配置的换算系数（PIXELS_PER_METER）
+        mouse_distance_m = stat.get('total_mouse_distance', 0) / PIXELS_PER_METER
+        
         return {
             'date': stat['stat_date'],
             'first_boot': stat['first_boot_time'],
@@ -65,42 +64,43 @@ class DataAnalyzer:
             'total_clicks': stat['total_mouse_clicks'],
             'total_presses': stat['total_key_presses'],
             'total_switches': stat['total_window_switches'],
+            'total_mouse_distance': round(mouse_distance_m, 2),  # 米
             'avg_busy_index': stat['average_busy_index'],
             'max_busy_index': stat['max_busy_index'],
             'work_sessions': stat['work_sessions']
         }
     
     def get_week_report(self, end_date: datetime.date = None) -> Dict:
-        """获取周报"""
+        """Get weekly report"""
         if end_date is None:
             end_date = datetime.now().date()
         
         start_date = end_date - timedelta(days=6)
-        return self._generate_period_report(start_date, end_date, '周报')
+        return self._generate_period_report(start_date, end_date, 'Weekly Report')
     
     def get_month_report(self, year: int = None, month: int = None) -> Dict:
-        """获取月报"""
+        """Get monthly report"""
         if year is None or month is None:
             now = datetime.now()
             year, month = now.year, now.month
         
         start_date = datetime(year, month, 1).date()
         
-        # 计算月末
+        # Calculate end of month
         if month == 12:
             end_date = datetime(year + 1, 1, 1).date() - timedelta(days=1)
         else:
             end_date = datetime(year, month + 1, 1).date() - timedelta(days=1)
         
-        return self._generate_period_report(start_date, end_date, '月报')
+        return self._generate_period_report(start_date, end_date, 'Monthly Report')
     
     def get_custom_report(self, start_date: datetime.date, end_date: datetime.date) -> Dict:
-        """获取自定义时间段报表"""
-        return self._generate_period_report(start_date, end_date, '自定义报表')
+        """Get custom period report"""
+        return self._generate_period_report(start_date, end_date, 'Custom Report')
     
     def _generate_period_report(self, start_date: datetime.date, 
                                end_date: datetime.date, report_type: str) -> Dict:
-        """生成时间段报表"""
+        """Generate period report"""
         stats = self.db.get_daily_stats(start_date, end_date)
         
         if not stats:
@@ -118,7 +118,7 @@ class DataAnalyzer:
         
         df = pd.DataFrame(stats)
         
-        # 基础统计
+        # Basic statistics
         work_days = len(df)
         total_active_minutes = df['total_active_minutes'].sum()
         total_active_hours = total_active_minutes / 60
@@ -126,21 +126,38 @@ class DataAnalyzer:
         
         avg_busy_index = df['average_busy_index'].mean()
         
-        # 计算作息规律性得分（基于开机时间的标准差，越小越规律）
+        # Calculate regularity score (based on standard deviation of boot time, smaller is more regular)
         df['first_boot_hour'] = pd.to_datetime(df['first_boot_time']).dt.hour + \
                                 pd.to_datetime(df['first_boot_time']).dt.minute / 60
         boot_time_std = df['first_boot_hour'].std()
-        regularity_score = max(0, 100 - boot_time_std * 10)  # 标准差越大，规律性越低
+        regularity_score = max(0, 100 - boot_time_std * 10)  # Larger standard deviation means lower regularity
         
-        # 最早和最晚的开机时间
+        # Earliest and latest boot times
         earliest_boot = df['first_boot_hour'].min()
         latest_boot = df['first_boot_hour'].max()
         avg_boot_time = df['first_boot_hour'].mean()
         
-        # 总活动统计
+        # Total activity statistics
         total_clicks = df['total_mouse_clicks'].sum()
         total_presses = df['total_key_presses'].sum()
         total_switches = df['total_window_switches'].sum()
+        # 鼠标移动距离：像素 → 米
+        total_mouse_distance = df.get('total_mouse_distance', pd.Series([0])).sum() / PIXELS_PER_METER
+        
+        # 计算工作强度指标（相对于平均值）
+        # 工作强度 = (活动时长 × 忙碌指数) / 平均活动时长
+        df['work_intensity'] = (df['total_active_minutes'] / 60) * df['average_busy_index'] / 100
+        avg_work_intensity = df['work_intensity'].mean()
+        max_work_intensity = df['work_intensity'].max()
+        
+        # 计算专注度（基于窗口切换频率，切换越少越专注）
+        df['focus_score'] = 100 - (df['total_window_switches'] / (df['total_active_minutes'] / 60)).clip(0, 100)
+        avg_focus_score = df['focus_score'].mean()
+        
+        # 计算效率指标（键盘+鼠标活动 / 活动时长）
+        df['efficiency_score'] = ((df['total_mouse_clicks'] + df['total_key_presses']) / 
+                                   (df['total_active_minutes'] + 1)).clip(0, 100)
+        avg_efficiency = df['efficiency_score'].mean()
         
         return {
             'report_type': report_type,
@@ -151,6 +168,10 @@ class DataAnalyzer:
             'total_active_hours': round(total_active_hours, 2),
             'avg_daily_active_hours': round(avg_daily_active_hours, 2),
             'avg_busy_index': round(avg_busy_index, 2),
+            'avg_work_intensity': round(avg_work_intensity, 2),
+            'max_work_intensity': round(max_work_intensity, 2),
+            'avg_focus_score': round(avg_focus_score, 2),
+            'avg_efficiency': round(avg_efficiency, 2),
             'regularity_score': round(regularity_score, 2),
             'earliest_boot_hour': round(earliest_boot, 2),
             'latest_boot_hour': round(latest_boot, 2),
@@ -158,76 +179,92 @@ class DataAnalyzer:
             'total_mouse_clicks': int(total_clicks),
             'total_key_presses': int(total_presses),
             'total_window_switches': int(total_switches),
+            'total_mouse_distance_m': round(total_mouse_distance, 2),  # 米
             'daily_stats': stats
         }
     
     def generate_busy_curve(self, date: datetime.date, save_path: str = None) -> str:
-        """生成忙碌度曲线图"""
+        """Generate busy curve chart
+        注意：包含第二天凌晨0:00-2:00的数据
+        """
         start_time = datetime.combine(date, datetime.min.time())
-        end_time = datetime.combine(date, datetime.max.time())
+        next_day = date + timedelta(days=1)
+        end_time = datetime.combine(next_day, datetime.min.time()) + timedelta(hours=2)
         
         records = self.db.get_activity_records(start_time, end_time)
         
         if not records:
-            logger.warning(f"没有找到 {date} 的数据")
+            logger.warning(f"No data found for {date}")
             return None
         
         df = pd.DataFrame(records)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df['hour'] = df['timestamp'].dt.hour
         df['minute'] = df['timestamp'].dt.minute
-        df['time_decimal'] = df['hour'] + df['minute'] / 60
+        # 将第二天凌晨0-2点的时间转换为24-26点显示
+        df['time_decimal'] = df.apply(
+            lambda row: row['hour'] + row['minute'] / 60 if row['timestamp'].date() == date 
+            else 24 + row['hour'] + row['minute'] / 60, 
+            axis=1
+        )
         
-        # 创建图表
+        # Create chart
         fig, ax = plt.subplots(figsize=CHART_FIGSIZE, dpi=CHART_DPI)
         
-        # 绘制忙碌度曲线
-        ax.plot(df['time_decimal'], df['busy_index'], 
-               linewidth=2, color='#3498db', label='忙碌指数')
+        # Plot busy curve
+        ax.plot(df['time_decimal'], df['busy_index'], '.',
+               linewidth=2, color='#3498db', label='Busy Index')
         
-        # 填充区域
+        # Fill area
         ax.fill_between(df['time_decimal'], 0, df['busy_index'], 
                         alpha=0.3, color='#3498db')
         
-        # 标记空闲时段
+        # Mark idle periods
         idle_periods = df[df['is_idle'] == 1]
         if not idle_periods.empty:
             ax.scatter(idle_periods['time_decimal'], 
                       idle_periods['busy_index'],
-                      color='red', s=20, alpha=0.5, label='空闲时段')
+                      color='red', s=20, alpha=0.5, label='Idle Period')
         
-        # 设置图表属性
-        ax.set_xlabel('时间', fontsize=12)
-        ax.set_ylabel('忙碌指数', fontsize=12)
-        ax.set_title(f'{date} 忙碌度曲线图', fontsize=14, fontweight='bold')
-        ax.set_xlim(0, 24)
+        # Set chart properties
+        ax.set_xlabel('Time', fontsize=12)
+        ax.set_ylabel('Busy Index', fontsize=12)
+        ax.set_title(f'{date} Busy Curve Chart (含次日凌晨2点前)', fontsize=14, fontweight='bold')
+        ax.set_xlim(0, 26)
         ax.set_ylim(0, 105)
         ax.grid(True, alpha=0.3)
         ax.legend()
         
-        # 设置X轴刻度
-        ax.set_xticks(range(0, 25, 2))
-        ax.set_xticklabels([f'{h:02d}:00' for h in range(0, 25, 2)], rotation=45)
+        # Set X-axis ticks (0-26点，即到第二天凌晨2点)
+        hour_ticks = list(range(0, 27, 2))
+        hour_labels = []
+        for h in hour_ticks:
+            if h < 24:
+                hour_labels.append(f'{h:02d}:00')
+            else:
+                hour_labels.append(f'次日{h-24:02d}:00')
+        ax.set_xticks(hour_ticks)
+        ax.set_xticklabels(hour_labels, rotation=45)
         
         plt.tight_layout()
         
-        # 保存图表
+        # Save chart
         if save_path is None:
             save_path = os.path.join(STATIC_DIR, f'busy_curve_{date}.png')
         
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
         plt.close()
         
-        logger.info(f"忙碌度曲线图已生成: {save_path}")
+        logger.info(f"Busy curve chart generated: {save_path}")
         return save_path
     
     def generate_heatmap(self, start_date: datetime.date, 
                         end_date: datetime.date, save_path: str = None) -> str:
-        """生成活动热力图"""
+        """Generate activity heatmap"""
         stats = self.db.get_daily_stats(start_date, end_date)
         
         if not stats:
-            logger.warning(f"没有找到 {start_date} 到 {end_date} 的数据")
+            logger.warning(f"No data found from {start_date} to {end_date}")
             return None
         
         df = pd.DataFrame(stats)
@@ -235,7 +272,7 @@ class DataAnalyzer:
         df['weekday'] = df['stat_date'].dt.dayofweek
         df['week'] = df['stat_date'].dt.isocalendar().week
         
-        # 创建透视表
+        # Create pivot table
         pivot = df.pivot_table(
             values='total_active_minutes',
             index='weekday',
@@ -244,25 +281,25 @@ class DataAnalyzer:
             fill_value=0
         )
         
-        # 转换为小时
+        # Convert to hours
         pivot = pivot / 60
         
-        # 创建图表
+        # Create chart
         fig, ax = plt.subplots(figsize=HEATMAP_FIGSIZE, dpi=CHART_DPI)
         
         sns.heatmap(pivot, annot=True, fmt='.1f', cmap='YlOrRd',
-                   cbar_kws={'label': '活动时长（小时）'},
+                   cbar_kws={'label': 'Activity Duration (hours)'},
                    linewidths=0.5, ax=ax)
         
-        ax.set_xlabel('周数', fontsize=12)
-        ax.set_ylabel('星期', fontsize=12)
-        ax.set_title(f'{start_date} 至 {end_date} 活动热力图', 
+        ax.set_xlabel('Week Number', fontsize=12)
+        ax.set_ylabel('Weekday', fontsize=12)
+        ax.set_title(f'{start_date} to {end_date} Activity Heatmap', 
                     fontsize=14, fontweight='bold')
-        ax.set_yticklabels(['周一', '周二', '周三', '周四', '周五', '周六', '周日'])
+        ax.set_yticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
         
         plt.tight_layout()
         
-        # 保存图表
+        # Save chart
         if save_path is None:
             save_path = os.path.join(STATIC_DIR, 
                                     f'heatmap_{start_date}_{end_date}.png')
@@ -270,63 +307,63 @@ class DataAnalyzer:
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
         plt.close()
         
-        logger.info(f"活动热力图已生成: {save_path}")
+        logger.info(f"Activity heatmap generated: {save_path}")
         return save_path
     
     def generate_trend_chart(self, start_date: datetime.date,
                             end_date: datetime.date, save_path: str = None) -> str:
-        """生成趋势图"""
+        """Generate trend chart"""
         stats = self.db.get_daily_stats(start_date, end_date)
         
         if not stats:
-            logger.warning(f"没有找到 {start_date} 到 {end_date} 的数据")
+            logger.warning(f"No data found from {start_date} to {end_date}")
             return None
         
         df = pd.DataFrame(stats)
         df['stat_date'] = pd.to_datetime(df['stat_date'])
         df['active_hours'] = df['total_active_minutes'] / 60
         
-        # 创建图表
+        # Create chart
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=CHART_DPI)
         
-        # 活动时长趋势
+        # Activity duration trend
         ax1.plot(df['stat_date'], df['active_hours'], 
                 marker='o', linewidth=2, markersize=6, color='#2ecc71')
         ax1.fill_between(df['stat_date'], 0, df['active_hours'], 
                         alpha=0.3, color='#2ecc71')
-        ax1.set_xlabel('日期', fontsize=12)
-        ax1.set_ylabel('活动时长（小时）', fontsize=12)
-        ax1.set_title('每日活动时长趋势', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Date', fontsize=12)
+        ax1.set_ylabel('Activity Duration (hours)', fontsize=12)
+        ax1.set_title('Daily Activity Duration Trend', fontsize=14, fontweight='bold')
         ax1.grid(True, alpha=0.3)
         ax1.tick_params(axis='x', rotation=45)
         
-        # 添加平均线
+        # Add average line
         avg_hours = df['active_hours'].mean()
         ax1.axhline(y=avg_hours, color='red', linestyle='--', 
-                   linewidth=2, label=f'平均: {avg_hours:.2f}小时')
+                   linewidth=2, label=f'Average: {avg_hours:.2f} hours')
         ax1.legend()
         
-        # 忙碌指数趋势
+        # Busy index trend
         ax2.plot(df['stat_date'], df['average_busy_index'],
                 marker='s', linewidth=2, markersize=6, color='#e74c3c')
         ax2.fill_between(df['stat_date'], 0, df['average_busy_index'],
                         alpha=0.3, color='#e74c3c')
-        ax2.set_xlabel('日期', fontsize=12)
-        ax2.set_ylabel('忙碌指数', fontsize=12)
-        ax2.set_title('每日平均忙碌指数趋势', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Date', fontsize=12)
+        ax2.set_ylabel('Busy Index', fontsize=12)
+        ax2.set_title('Daily Average Busy Index Trend', fontsize=14, fontweight='bold')
         ax2.set_ylim(0, 100)
         ax2.grid(True, alpha=0.3)
         ax2.tick_params(axis='x', rotation=45)
         
-        # 添加平均线
+        # Add average line
         avg_busy = df['average_busy_index'].mean()
         ax2.axhline(y=avg_busy, color='blue', linestyle='--',
-                   linewidth=2, label=f'平均: {avg_busy:.2f}')
+                   linewidth=2, label=f'Average: {avg_busy:.2f}')
         ax2.legend()
         
         plt.tight_layout()
         
-        # 保存图表
+        # Save chart
         if save_path is None:
             save_path = os.path.join(STATIC_DIR,
                                     f'trend_{start_date}_{end_date}.png')
@@ -334,89 +371,101 @@ class DataAnalyzer:
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
         plt.close()
         
-        logger.info(f"趋势图已生成: {save_path}")
+        logger.info(f"Trend chart generated: {save_path}")
         return save_path
     
     def export_to_csv(self, start_date: datetime.date,
                      end_date: datetime.date, output_path: str) -> bool:
-        """导出数据为CSV"""
+        """Export data to CSV"""
         try:
             stats = self.db.get_daily_stats(start_date, end_date)
             
             if not stats:
-                logger.warning("没有数据可导出")
+                logger.warning("No data to export")
                 return False
             
             df = pd.DataFrame(stats)
             df.to_csv(output_path, index=False, encoding='utf-8-sig')
             
-            logger.info(f"数据已导出到: {output_path}")
+            logger.info(f"Data exported to: {output_path}")
             return True
         except Exception as e:
-            logger.error(f"导出CSV失败: {e}")
+            logger.error(f"CSV export failed: {e}")
             return False
     
     def export_to_excel(self, start_date: datetime.date,
                        end_date: datetime.date, output_path: str) -> bool:
-        """导出数据为Excel"""
+        """Export data to Excel"""
         try:
-            # 获取每日统计
+            # Get daily statistics
             daily_stats = self.db.get_daily_stats(start_date, end_date)
             
             if not daily_stats:
-                logger.warning("没有数据可导出")
+                logger.warning("No data to export")
                 return False
             
-            # 创建Excel写入器
+            # Create Excel writer
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                # 每日统计表
+                # Daily statistics sheet
                 df_daily = pd.DataFrame(daily_stats)
                 df_daily['active_hours'] = df_daily['total_active_minutes'] / 60
                 df_daily['idle_hours'] = df_daily['total_idle_minutes'] / 60
                 
-                df_daily.to_excel(writer, sheet_name='每日统计', index=False)
+                df_daily.to_excel(writer, sheet_name='Daily Statistics', index=False)
                 
-                # 周报表
+                # Summary statistics sheet
                 week_report = self.get_custom_report(start_date, end_date)
                 df_summary = pd.DataFrame([{
-                    '统计项': '总工作天数',
-                    '数值': week_report['work_days']
+                    'Statistic': 'Total Work Days',
+                    'Value': week_report['work_days']
                 }, {
-                    '统计项': '总活动时长（小时）',
-                    '数值': week_report['total_active_hours']
+                    'Statistic': 'Total Active Hours',
+                    'Value': week_report['total_active_hours']
                 }, {
-                    '统计项': '日均活动时长（小时）',
-                    '数值': week_report['avg_daily_active_hours']
+                    'Statistic': 'Average Daily Active Hours',
+                    'Value': week_report['avg_daily_active_hours']
                 }, {
-                    '统计项': '平均忙碌指数',
-                    '数值': week_report['avg_busy_index']
+                    'Statistic': 'Average Busy Index',
+                    'Value': week_report['avg_busy_index']
                 }, {
-                    '统计项': '作息规律性得分',
-                    '数值': week_report['regularity_score']
+                    'Statistic': 'Average Work Intensity',
+                    'Value': week_report['avg_work_intensity']
+                }, {
+                    'Statistic': 'Average Focus Score',
+                    'Value': week_report['avg_focus_score']
+                }, {
+                    'Statistic': 'Average Efficiency',
+                    'Value': week_report['avg_efficiency']
+                }, {
+                    'Statistic': 'Regularity Score',
+                    'Value': week_report['regularity_score']
+                }, {
+                    'Statistic': 'Total Mouse Distance (m)',
+                    'Value': week_report['total_mouse_distance_m']
                 }])
                 
-                df_summary.to_excel(writer, sheet_name='汇总统计', index=False)
+                df_summary.to_excel(writer, sheet_name='Summary Statistics', index=False)
             
-            logger.info(f"数据已导出到: {output_path}")
+            logger.info(f"Data exported to: {output_path}")
             return True
         except Exception as e:
-            logger.error(f"导出Excel失败: {e}")
+            logger.error(f"Excel export failed: {e}")
             return False
 
 
 def main():
-    """主函数（用于测试）"""
+    """Main function (for testing)"""
     analyzer = DataAnalyzer()
     
-    # 测试今日汇总
+    # Test today's summary
     today_summary = analyzer.get_today_summary()
-    print("今日汇总:", today_summary)
+    print("Today's Summary:", today_summary)
     
-    # 测试周报
+    # Test weekly report
     week_report = analyzer.get_week_report()
-    print("\n周报:", week_report)
+    print("\nWeekly Report:", week_report)
     
-    # 生成图表
+    # Generate charts
     today = datetime.now().date()
     analyzer.generate_busy_curve(today)
     analyzer.generate_trend_chart(today - timedelta(days=7), today)
@@ -425,4 +474,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
