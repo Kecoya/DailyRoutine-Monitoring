@@ -36,14 +36,28 @@ env/
 *.swo
 *~
 
-# Data files
-data/*.db
-data/*.csv
-data/*.xlsx
-data/*.xls
+# Data files (包含隐私监控数据)
+data/
+*.db
+*.csv
+*.xlsx
+*.xls
 
-# Log files
-logs/*.log
+# Log files (包含用户活动记录)
+logs/
+*.log
+
+# 配置文件 (可能包含个人设置)
+config.json
+settings.json
+
+# 自动生成的报告和图表
+reports/
+charts/
+*.html
+*.png
+*.jpg
+*.jpeg
 
 # Static generated files
 static/*.png

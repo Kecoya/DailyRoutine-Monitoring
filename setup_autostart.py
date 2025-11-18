@@ -32,6 +32,8 @@ def setup_autostart():
         shortcut.WorkingDirectory = str(script_dir)
         shortcut.Description = "系统监控与作息分析程序"
         shortcut.IconLocation = python_exe
+        # 隐藏命令行窗口 (window style 7 = minimized, 0 = hidden)
+        shortcut.WindowStyle = 0
         
         # 保存快捷方式
         shortcut.save()
