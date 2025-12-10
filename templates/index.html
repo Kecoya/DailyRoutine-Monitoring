@@ -422,6 +422,11 @@
                             <div class="unit">小时</div>
                         </div>
                         <div class="stat-card">
+                            <h3>工作达成率</h3>
+                            <div class="value">${data.work_completion_rate !== undefined ? data.work_completion_rate.toFixed(1) : '0.0'}</div>
+                            <div class="unit">%</div>
+                        </div>
+                        <div class="stat-card">
                             <h3>鼠标点击</h3>
                             <div class="value">${data.total_clicks || 0}</div>
                             <div class="unit">次</div>

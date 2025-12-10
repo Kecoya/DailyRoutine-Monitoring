@@ -12,39 +12,45 @@ def setup_autostart():
     try:
         # 获取当前脚本路径
         script_dir = Path(__file__).parent.absolute()
-        main_script = script_dir / "main.py"
+        launcher_script = script_dir / "silent_launcher.py"
         python_exe = sys.executable
-        
+
+        # 优先使用 pythonw.exe（无窗口版本）
+        pythonw_exe = python_exe.replace("python.exe", "pythonw.exe")
+        if not os.path.exists(pythonw_exe):
+            pythonw_exe = python_exe  # 如果没有pythonw.exe，使用python.exe
+
         # 创建启动快捷方式
         startup_folder = Path(os.path.expanduser(
             "~\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
         ))
-        
+
         shortcut_path = startup_folder / "SystemMonitor.lnk"
-        
+
         # 使用win32com创建快捷方式
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(str(shortcut_path))
-        
+
         # 设置快捷方式属性
-        shortcut.TargetPath = python_exe
-        shortcut.Arguments = f'"{main_script}"'
+        shortcut.TargetPath = pythonw_exe
+        shortcut.Arguments = f'"{launcher_script}"'
         shortcut.WorkingDirectory = str(script_dir)
         shortcut.Description = "系统监控与作息分析程序"
-        shortcut.IconLocation = python_exe
-        # 隐藏命令行窗口 (window style 7 = minimized, 0 = hidden)
+        shortcut.IconLocation = pythonw_exe
+        # 隐藏命令行窗口 (window style 0 = hidden)
         shortcut.WindowStyle = 0
-        
+
         # 保存快捷方式
         shortcut.save()
-        
+
         print(f"✅ 成功设置开机自启动！")
         print(f"   快捷方式位置: {shortcut_path}")
-        print(f"   目标程序: {main_script}")
-        print(f"\n程序将在下次开机时自动启动。")
-        
+        print(f"   启动器: {launcher_script}")
+        print(f"   Python解释器: {pythonw_exe}")
+        print(f"\n🔕 程序将在下次开机时静默启动（无窗口）")
+
         return True
-        
+
     except Exception as e:
         print(f"❌ 设置自启动失败: {e}")
         print(f"\n请确保：")

@@ -4,6 +4,8 @@ Generate statistical reports and visualization charts
 """
 import os
 import logging
+import calendar
+import glob
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
 import pandas as pd
@@ -13,9 +15,13 @@ import matplotlib
 import matplotlib.pyplot as plt
 matplotlib.use('Agg')  # Use non-GUI backend
 
+# Set font for Chinese characters
+plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
+plt.rcParams['axes.unicode_minus'] = False
+
 import seaborn as sns
 from database import Database
-from config import CHART_DPI, CHART_FIGSIZE, HEATMAP_FIGSIZE, STATIC_DIR, PIXELS_PER_METER
+from config import CHART_DPI, CHART_FIGSIZE, HEATMAP_FIGSIZE, STATIC_DIR, PIXELS_PER_METER, LAB_WORK_HOURS
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +37,59 @@ class DataAnalyzer:
     def __init__(self):
         self.db = Database()
     
+    def cleanup_old_images(self, days_to_keep: int = 7):
+        """Clean up old image files in static directory"""
+        try:
+            # Get all image files in static directory
+            image_patterns = [
+                os.path.join(STATIC_DIR, 'busy_curve_*.png'),
+                os.path.join(STATIC_DIR, 'trend_*.png'),
+                os.path.join(STATIC_DIR, 'heatmap_*.png'),
+                os.path.join(STATIC_DIR, 'calendar_*.png')
+            ]
+            
+            files_to_check = []
+            for pattern in image_patterns:
+                files_to_check.extend(glob.glob(pattern))
+            
+            # Calculate cutoff time
+            cutoff_time = datetime.now() - timedelta(days=days_to_keep)
+            deleted_count = 0
+            
+            for file_path in files_to_check:
+                # Skip .gitkeep file
+                if file_path.endswith('.gitkeep'):
+                    continue
+                
+                try:
+                    # Get file modification time
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    
+                    # Delete if file is older than cutoff
+                    if file_mtime < cutoff_time:
+                        os.remove(file_path)
+                        deleted_count += 1
+                        logger.info(f"Deleted old image: {os.path.basename(file_path)}")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to delete {file_path}: {e}")
+            
+            if deleted_count > 0:
+                logger.info(f"Cleanup completed: deleted {deleted_count} old image files")
+            else:
+                logger.info("Cleanup completed: no old files to delete")
+                
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"Image cleanup failed: {e}")
+            return 0
+    
     def get_today_summary(self) -> Dict:
         """Get today's summary data"""
         today = datetime.now().date()
         stats = self.db.get_daily_stats(today, today)
-        
+
         if not stats:
             return {
                 'date': today.isoformat(),
@@ -45,15 +99,20 @@ class DataAnalyzer:
                 'idle_minutes': 0,
                 'total_clicks': 0,
                 'total_presses': 0,
-                'avg_busy_index': 0
+                'avg_busy_index': 0,
+                'work_completion_rate': 0  # 新增：工作达成率
             }
-        
+
         stat = stats[0]
-        
+
         # 计算鼠标移动距离（像素 → 米）
         # 使用配置的换算系数（PIXELS_PER_METER）
         mouse_distance_m = stat.get('total_mouse_distance', 0) / PIXELS_PER_METER
-        
+
+        # 计算工作达成率（活动时长 / 实验室标准工作时长）
+        active_hours = stat['total_active_minutes'] / 60
+        work_completion_rate = (active_hours / LAB_WORK_HOURS) * 100
+
         return {
             'date': stat['stat_date'],
             'first_boot': stat['first_boot_time'],
@@ -67,7 +126,8 @@ class DataAnalyzer:
             'total_mouse_distance': round(mouse_distance_m, 2),  # 米
             'avg_busy_index': stat['average_busy_index'],
             'max_busy_index': stat['max_busy_index'],
-            'work_sessions': stat['work_sessions']
+            'work_sessions': stat['work_sessions'],
+            'work_completion_rate': round(work_completion_rate, 1)  # 工作达成率(%)
         }
     
     def get_week_report(self, end_date: datetime.date = None) -> Dict:
@@ -255,59 +315,137 @@ class DataAnalyzer:
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
         plt.close()
         
+        # Clean up old images periodically (every 10th call)
+        if hash(save_path) % 10 == 0:
+            self.cleanup_old_images()
+        
         logger.info(f"Busy curve chart generated: {save_path}")
         return save_path
     
     def generate_heatmap(self, start_date: datetime.date, 
                         end_date: datetime.date, save_path: str = None) -> str:
-        """Generate activity heatmap"""
-        stats = self.db.get_daily_stats(start_date, end_date)
+        """Generate calendar-style activity heatmap"""
+        # Get calendar data for the month containing start_date
+        if start_date.month != end_date.month:
+            # If spanning multiple months, use the first month
+            year, month = start_date.year, start_date.month
+        else:
+            year, month = start_date.year, start_date.month
         
-        if not stats:
-            logger.warning(f"No data found from {start_date} to {end_date}")
-            return None
+        # Get first and last day of the month
+        first_day = datetime(year, month, 1).date()
+        if month == 12:
+            last_day = datetime(year + 1, 1, 1).date() - timedelta(days=1)
+        else:
+            last_day = datetime(year, month + 1, 1).date() - timedelta(days=1)
         
-        df = pd.DataFrame(stats)
-        df['stat_date'] = pd.to_datetime(df['stat_date'])
-        df['weekday'] = df['stat_date'].dt.dayofweek
-        df['week'] = df['stat_date'].dt.isocalendar().week
+        # Get stats for the month
+        stats = self.db.get_daily_stats(first_day, last_day)
         
-        # Create pivot table
-        pivot = df.pivot_table(
-            values='total_active_minutes',
-            index='weekday',
-            columns='week',
-            aggfunc='sum',
-            fill_value=0
-        )
+        # Create date to data mapping
+        data_dict = {}
+        if stats:
+            for stat in stats:
+                date_str = stat['stat_date']
+                active_hours = stat['total_active_minutes'] / 60
+                work_completion_rate = (active_hours / LAB_WORK_HOURS) * 100
+                data_dict[date_str] = {
+                    'active_hours': active_hours,
+                    'completion_rate': work_completion_rate
+                }
         
-        # Convert to hours
-        pivot = pivot / 60
+        # Create calendar grid
+        cal = calendar.monthcalendar(year, month)
+        today = datetime.now().date()
+        yesterday = today - timedelta(days=1)
         
-        # Create chart
-        fig, ax = plt.subplots(figsize=HEATMAP_FIGSIZE, dpi=CHART_DPI)
+        # Create figure
+        fig, ax = plt.subplots(figsize=(16, 10), dpi=CHART_DPI)
+        ax.set_xlim(0, 7)
+        ax.set_ylim(0, len(cal) + 1)
+        ax.axis('off')
         
-        sns.heatmap(pivot, annot=True, fmt='.1f', cmap='YlOrRd',
-                   cbar_kws={'label': 'Activity Duration (hours)'},
-                   linewidths=0.5, ax=ax)
+        # Title
+        month_name = calendar.month_name[month]
+        ax.text(3.5, len(cal) + 0.8, f'{month_name} {year} Activity Calendar', 
+                fontsize=20, fontweight='bold', ha='center')
         
-        ax.set_xlabel('Week Number', fontsize=12)
-        ax.set_ylabel('Weekday', fontsize=12)
-        ax.set_title(f'{start_date} to {end_date} Activity Heatmap', 
-                    fontsize=14, fontweight='bold')
-        ax.set_yticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+        # Weekday headers
+        weekday_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        for i, day_name in enumerate(weekday_names):
+            ax.text(i + 0.5, len(cal) - 0.2, day_name, 
+                    fontsize=12, ha='center', fontweight='bold')
+        
+        # Draw calendar days
+        for week_num, week in enumerate(cal):
+            for day_num, day in enumerate(week):
+                if day == 0:
+                    continue  # Empty day (padding)
+                
+                current_date = datetime(year, month, day).date()
+                date_str = current_date.isoformat()
+                
+                # Determine cell color
+                if current_date > today:
+                    # Future dates - light gray
+                    bg_color = '#f0f0f0'
+                    text_color = '#cccccc'
+                elif current_date == today:
+                    # Today - light red
+                    bg_color = '#ffebee'
+                    text_color = '#c62828'
+                else:
+                    # Past dates - normal white
+                    bg_color = '#ffffff'
+                    text_color = '#333333'
+                
+                # Draw cell background
+                rect = plt.Rectangle((day_num, len(cal) - week_num - 1), 1, 1, 
+                                   facecolor=bg_color, edgecolor='#dddddd', linewidth=1)
+                ax.add_patch(rect)
+                
+                # Draw day number
+                ax.text(day_num + 0.5, len(cal) - week_num - 0.5, str(day), 
+                        fontsize=16, ha='center', va='center', 
+                        fontweight='bold', color=text_color)
+                
+                # Draw activity data for past dates
+                if current_date <= today and date_str in data_dict:
+                    data = data_dict[date_str]
+                    active_hours = data['active_hours']
+                    completion_rate = data.get('completion_rate', None)
+                    
+                    # Add activity info in the top-right of the cell
+                    if completion_rate is not None:
+                        info_text = f'{active_hours:.1f}h\n{completion_rate:.0f}%'
+                    else:
+                        info_text = f'{active_hours:.1f}h\nN/A'
+                    
+                    ax.text(day_num + 0.85, len(cal) - week_num - 0.15, info_text, 
+                            fontsize=12, ha='right', va='top', 
+                            color=text_color, alpha=0.9, fontweight='bold')
+        
+        # Add legend
+        legend_y = -0.5
+        ax.text(0, legend_y, 'Legend:', fontsize=10, fontweight='bold')
+        ax.text(0, legend_y - 0.3, '• Light Gray: Future dates', fontsize=9, color='#666666')
+        ax.text(3, legend_y - 0.3, '• Light Red: Today', fontsize=9, color='#666666')
+        ax.text(5.5, legend_y - 0.3, f'• Standard: {LAB_WORK_HOURS}h/day', fontsize=9, color='#666666')
         
         plt.tight_layout()
         
         # Save chart
         if save_path is None:
-            save_path = os.path.join(STATIC_DIR, 
-                                    f'heatmap_{start_date}_{end_date}.png')
+            save_path = os.path.join(STATIC_DIR, f'calendar_{year}_{month:02d}.png')
         
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
         plt.close()
         
-        logger.info(f"Activity heatmap generated: {save_path}")
+        # Clean up old images periodically (every 10th call)
+        if hash(save_path) % 10 == 0:
+            self.cleanup_old_images()
+        
+        logger.info(f"Calendar heatmap generated: {save_path}")
         return save_path
     
     def generate_trend_chart(self, start_date: datetime.date,
@@ -341,6 +479,11 @@ class DataAnalyzer:
         avg_hours = df['active_hours'].mean()
         ax1.axhline(y=avg_hours, color='red', linestyle='--', 
                    linewidth=2, label=f'Average: {avg_hours:.2f} hours')
+        
+        # Add work hours baseline (LAB_WORK_HOURS)
+        ax1.axhline(y=LAB_WORK_HOURS, color='orange', linestyle='-.', 
+                   linewidth=2, label=f'Standard Work Hours: {LAB_WORK_HOURS:.1f} hours')
+        
         ax1.legend()
         
         # Busy index trend
@@ -370,6 +513,10 @@ class DataAnalyzer:
         
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
         plt.close()
+        
+        # Clean up old images periodically (every 10th call)
+        if hash(save_path) % 10 == 0:
+            self.cleanup_old_images()
         
         logger.info(f"Trend chart generated: {save_path}")
         return save_path
