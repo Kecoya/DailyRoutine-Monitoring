@@ -4,13 +4,13 @@ Windows 自启动配置脚本
 """
 import os
 import sys
-import win32com.client
+import subprocess
 from pathlib import Path
+
 
 def setup_autostart():
     """设置开机自启动"""
     try:
-        # 获取当前脚本路径
         script_dir = Path(__file__).parent.absolute()
         launcher_script = script_dir / "silent_launcher.py"
         python_exe = sys.executable
@@ -18,7 +18,7 @@ def setup_autostart():
         # 优先使用 pythonw.exe（无窗口版本）
         pythonw_exe = python_exe.replace("python.exe", "pythonw.exe")
         if not os.path.exists(pythonw_exe):
-            pythonw_exe = python_exe  # 如果没有pythonw.exe，使用python.exe
+            pythonw_exe = python_exe
 
         # 创建启动快捷方式
         startup_folder = Path(os.path.expanduser(
@@ -27,35 +27,56 @@ def setup_autostart():
 
         shortcut_path = startup_folder / "SystemMonitor.lnk"
 
-        # 使用win32com创建快捷方式
-        shell = win32com.client.Dispatch("WScript.Shell")
-        shortcut = shell.CreateShortCut(str(shortcut_path))
+        # 使用 PowerShell 创建快捷方式（不依赖 pywin32）
+        ps_script = f'''
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut("{shortcut_path}")
+$sc.TargetPath = "{pythonw_exe}"
+$sc.Arguments = '"{launcher_script}"'
+$sc.WorkingDirectory = "{script_dir}"
+$sc.Description = "系统监控与作息分析程序"
+$sc.WindowStyle = 0
+$sc.Save()
+'''
 
-        # 设置快捷方式属性
-        shortcut.TargetPath = pythonw_exe
-        shortcut.Arguments = f'"{launcher_script}"'
-        shortcut.WorkingDirectory = str(script_dir)
-        shortcut.Description = "系统监控与作息分析程序"
-        shortcut.IconLocation = pythonw_exe
-        # 隐藏命令行窗口 (window style 0 = hidden)
-        shortcut.WindowStyle = 0
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=10
+        )
 
-        # 保存快捷方式
-        shortcut.save()
+        if result.returncode == 0:
+            print(f"✅ 成功设置开机自启动！")
+            print(f"   快捷方式位置: {shortcut_path}")
+            print(f"   启动器: {launcher_script}")
+            print(f"   Python解释器: {pythonw_exe}")
+            print(f"\n🔕 程序将在下次开机时静默启动（无窗口）")
+            return True
+        else:
+            # PowerShell 失败，尝试用 pywin32
+            try:
+                import win32com.client
+                shell = win32com.client.Dispatch("WScript.Shell")
+                shortcut = shell.CreateShortCut(str(shortcut_path))
+                shortcut.TargetPath = pythonw_exe
+                shortcut.Arguments = f'"{launcher_script}"'
+                shortcut.WorkingDirectory = str(script_dir)
+                shortcut.Description = "系统监控与作息分析程序"
+                shortcut.IconLocation = pythonw_exe
+                shortcut.WindowStyle = 0
+                shortcut.save()
 
-        print(f"✅ 成功设置开机自启动！")
-        print(f"   快捷方式位置: {shortcut_path}")
-        print(f"   启动器: {launcher_script}")
-        print(f"   Python解释器: {pythonw_exe}")
-        print(f"\n🔕 程序将在下次开机时静默启动（无窗口）")
-
-        return True
+                print(f"✅ 成功设置开机自启动！(via pywin32)")
+                print(f"   快捷方式位置: {shortcut_path}")
+                return True
+            except ImportError:
+                print(f"❌ 设置自启动失败: PowerShell 和 pywin32 均不可用")
+                print(f"   PowerShell 错误: {result.stderr.strip()}")
+                return False
 
     except Exception as e:
         print(f"❌ 设置自启动失败: {e}")
         print(f"\n请确保：")
-        print(f"1. 以管理员身份运行此脚本")
-        print(f"2. 已安装 pywin32 库 (pip install pywin32)")
+        print(f"1. PowerShell 可用，或已安装 pywin32 库")
         return False
 
 
@@ -65,9 +86,9 @@ def remove_autostart():
         startup_folder = Path(os.path.expanduser(
             "~\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
         ))
-        
+
         shortcut_path = startup_folder / "SystemMonitor.lnk"
-        
+
         if shortcut_path.exists():
             os.remove(shortcut_path)
             print(f"✅ 已移除开机自启动！")
@@ -75,7 +96,7 @@ def remove_autostart():
         else:
             print(f"ℹ️ 未找到自启动配置")
             return False
-            
+
     except Exception as e:
         print(f"❌ 移除自启动失败: {e}")
         return False
@@ -86,9 +107,9 @@ def check_autostart():
     startup_folder = Path(os.path.expanduser(
         "~\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
     ))
-    
+
     shortcut_path = startup_folder / "SystemMonitor.lnk"
-    
+
     if shortcut_path.exists():
         print(f"✅ 已配置开机自启动")
         print(f"   快捷方式位置: {shortcut_path}")
@@ -104,16 +125,16 @@ def main():
     print("系统监控与作息分析程序 - 自启动配置")
     print("=" * 60)
     print()
-    
+
     print("请选择操作：")
     print("1. 设置开机自启动")
     print("2. 移除开机自启动")
     print("3. 检查自启动状态")
     print("4. 退出")
     print()
-    
+
     choice = input("请输入选项 (1-4): ").strip()
-    
+
     if choice == '1':
         print("\n正在设置开机自启动...")
         setup_autostart()
@@ -128,11 +149,10 @@ def main():
         return
     else:
         print("无效的选项")
-    
+
     print()
     input("按 Enter 键退出...")
 
 
 if __name__ == '__main__':
     main()
-

@@ -3,6 +3,7 @@ Web应用 - Flask服务器
 提供美观的Web界面查看统计结果
 """
 import os
+import socket
 import logging
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, send_file
@@ -15,14 +16,24 @@ from config import WEB_HOST, WEB_PORT, DEBUG_MODE, STATIC_DIR, TEMPLATES_DIR, DA
 
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__, 
-           static_folder=STATIC_DIR,
-           template_folder=TEMPLATES_DIR)
+app = Flask(__name__,
+            static_folder=STATIC_DIR,
+            template_folder=TEMPLATES_DIR)
 
 # 全局变量
 monitor = None
 analyzer = DataAnalyzer()
 db = Database()
+
+
+def is_port_in_use(host: str, port: int) -> bool:
+    """检测端口是否被占用"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
 
 
 @app.route('/')
@@ -87,7 +98,7 @@ def get_month():
     try:
         year = request.args.get('year', type=int)
         month = request.args.get('month', type=int)
-        
+
         report = analyzer.get_month_report(year, month)
         return jsonify({
             'success': True,
@@ -107,10 +118,16 @@ def get_custom():
     try:
         start_str = request.args.get('start')
         end_str = request.args.get('end')
-        
+
+        if not start_str or not end_str:
+            return jsonify({
+                'success': False,
+                'message': '请提供 start 和 end 日期参数'
+            })
+
         start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
         end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
-        
+
         report = analyzer.get_custom_report(start_date, end_date)
         return jsonify({
             'success': True,
@@ -133,9 +150,9 @@ def get_busy_curve():
             date = datetime.strptime(date_str, '%Y-%m-%d').date()
         else:
             date = datetime.now().date()
-        
+
         chart_path = analyzer.generate_busy_curve(date)
-        
+
         if chart_path and os.path.exists(chart_path):
             return jsonify({
                 'success': True,
@@ -162,16 +179,16 @@ def get_heatmap():
     try:
         start_str = request.args.get('start')
         end_str = request.args.get('end')
-        
+
         if start_str and end_str:
             start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
             end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
         else:
             end_date = datetime.now().date()
             start_date = end_date - timedelta(days=30)
-        
+
         chart_path = analyzer.generate_heatmap(start_date, end_date)
-        
+
         if chart_path and os.path.exists(chart_path):
             return jsonify({
                 'success': True,
@@ -198,16 +215,16 @@ def get_trend():
     try:
         start_str = request.args.get('start')
         end_str = request.args.get('end')
-        
+
         if start_str and end_str:
             start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
             end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
         else:
             end_date = datetime.now().date()
             start_date = end_date - timedelta(days=7)
-        
+
         chart_path = analyzer.generate_trend_chart(start_date, end_date)
-        
+
         if chart_path and os.path.exists(chart_path):
             return jsonify({
                 'success': True,
@@ -234,19 +251,22 @@ def export_csv():
     try:
         start_str = request.args.get('start')
         end_str = request.args.get('end')
-        
+
+        if not start_str or not end_str:
+            return jsonify({'success': False, 'message': '请提供日期参数'})
+
         start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
         end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
-        
+
         filename = f'activity_report_{start_date}_{end_date}.csv'
         output_path = os.path.join(DATA_DIR, filename)
-        
+
         success = analyzer.export_to_csv(start_date, end_date, output_path)
-        
+
         if success:
-            return send_file(output_path, 
-                           as_attachment=True,
-                           download_name=filename)
+            return send_file(output_path,
+                             as_attachment=True,
+                             download_name=filename)
         else:
             return jsonify({
                 'success': False,
@@ -266,19 +286,22 @@ def export_excel():
     try:
         start_str = request.args.get('start')
         end_str = request.args.get('end')
-        
+
+        if not start_str or not end_str:
+            return jsonify({'success': False, 'message': '请提供日期参数'})
+
         start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
         end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
-        
+
         filename = f'activity_report_{start_date}_{end_date}.xlsx'
         output_path = os.path.join(DATA_DIR, filename)
-        
+
         success = analyzer.export_to_excel(start_date, end_date, output_path)
-        
+
         if success:
             return send_file(output_path,
-                           as_attachment=True,
-                           download_name=filename)
+                             as_attachment=True,
+                             download_name=filename)
         else:
             return jsonify({
                 'success': False,
@@ -296,9 +319,15 @@ def start_web_server(monitor_instance):
     """启动Web服务器"""
     global monitor
     monitor = monitor_instance
-    
+
+    # 检测端口占用
+    if is_port_in_use(WEB_HOST, WEB_PORT):
+        logger.error(f"端口 {WEB_PORT} 已被占用，Web服务器无法启动！"
+                      f"请检查是否有其他实例在运行。")
+        return
+
     logger.info(f"Web服务器启动于 http://{WEB_HOST}:{WEB_PORT}")
-    app.run(host=WEB_HOST, port=WEB_PORT, debug=DEBUG_MODE, use_reloader=False)
+    app.run(host=WEB_HOST, port=WEB_PORT, debug=False, use_reloader=False)
 
 
 def run_in_thread(monitor_instance):
@@ -311,4 +340,3 @@ def run_in_thread(monitor_instance):
 if __name__ == '__main__':
     # 仅用于测试
     start_web_server(None)
-

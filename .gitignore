@@ -36,33 +36,26 @@ env/
 *.swo
 *~
 
-# Data files (包含隐私监控数据)
-data/
-*.db
-*.csv
-*.xlsx
-*.xls
+# Data files (包含隐私监控数据，不上传)
+data/*.db
+data/*.csv
+data/*.xlsx
+data/*.xls
 
-# Log files (包含用户活动记录)
-logs/
-*.log
+# Log files (包含用户活动记录，不上传)
+logs/*.log
 
 # 配置文件 (可能包含个人设置)
 config.json
 settings.json
 
-# 自动生成的报告和图表
-reports/
-charts/
-*.html
-*.png
-*.jpg
-*.jpeg
-
-# Static generated files
+# 自动生成的图表 (运行时产物)
 static/*.png
 static/*.jpg
 static/*.jpeg
+
+# Single instance lock file (运行时产物)
+.monitor.lock
 
 # OS
 .DS_Store
@@ -74,3 +67,10 @@ desktop.ini
 *.bak
 *.cache
 
+# 中文文档 (包含个人开发记录，不上传)
+更新说明.md
+监控间隔优化说明.md
+鼠标距离计算说明.md
+
+# Claude Code
+.claude/
