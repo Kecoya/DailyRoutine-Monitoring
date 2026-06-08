@@ -99,6 +99,11 @@ def get_month():
         year = request.args.get('year', type=int)
         month = request.args.get('month', type=int)
 
+        if month is not None and (month < 1 or month > 12):
+            return jsonify({'success': False, 'message': '月份必须在 1-12 之间'})
+        if year is not None and year < 2000:
+            return jsonify({'success': False, 'message': '年份不合法'})
+
         report = analyzer.get_month_report(year, month)
         return jsonify({
             'success': True,

@@ -7,6 +7,7 @@ import logging
 import calendar
 import glob
 import hashlib
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
 import pandas as pd
@@ -32,9 +33,13 @@ sns.set_palette("husl")
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'KaiTi', 'DejaVu Sans', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
-# 清理计数器，用于可靠地触发图片清理（替代 hash % 10 这种不可靠方式）
+# 图表生成锁：matplotlib.pyplot 不是线程安全的，
+# 多个 Flask 请求并发生成图表时 plt.close('all') 会杀死其他线程的 figure
+_chart_lock = threading.Lock()
+
+# 清理计数器
 _cleanup_counter = 0
-_CLEANUP_INTERVAL = 10  # 每生成 10 张图清理一次
+_CLEANUP_INTERVAL = 10
 
 
 class DataAnalyzer:
@@ -253,7 +258,7 @@ class DataAnalyzer:
         total_switches = df_filtered['total_window_switches'].sum()
 
         # 鼠标移动距离
-        if 'total_mouse_distance' in df_filtered.columns:
+        if 'total_mouse_distance' in df_filtered.columns and PIXELS_PER_METER > 0:
             total_mouse_distance = df_filtered['total_mouse_distance'].sum() / PIXELS_PER_METER
         else:
             total_mouse_distance = 0
@@ -313,6 +318,10 @@ class DataAnalyzer:
         """生成忙碌度曲线图
         包含第二天凌晨 0:00-2:00 的数据
         """
+        with _chart_lock:
+            return self._generate_busy_curve_impl(date, save_path)
+
+    def _generate_busy_curve_impl(self, date: datetime.date, save_path: str = None) -> Optional[str]:
         start_time = datetime.combine(date, datetime.min.time())
         next_day = date + timedelta(days=1)
         end_time = datetime.combine(next_day, datetime.min.time()) + timedelta(hours=2)
@@ -381,7 +390,7 @@ class DataAnalyzer:
             save_path = os.path.join(STATIC_DIR, f'busy_curve_{date}.png')
 
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
-        plt.close('all')
+        plt.close(fig)
 
         self._maybe_cleanup_images()
 
@@ -391,6 +400,11 @@ class DataAnalyzer:
     def generate_heatmap(self, start_date: datetime.date,
                           end_date: datetime.date, save_path: str = None) -> Optional[str]:
         """生成日历热力图"""
+        with _chart_lock:
+            return self._generate_heatmap_impl(start_date, end_date, save_path)
+
+    def _generate_heatmap_impl(self, start_date: datetime.date,
+                                end_date: datetime.date, save_path: str = None) -> Optional[str]:
         # 使用包含 start_date 的月份
         year, month = start_date.year, start_date.month
 
@@ -407,10 +421,7 @@ class DataAnalyzer:
         if stats:
             for stat in stats:
                 date_str = stat['stat_date']
-                # stat_date 可能是字符串或 date 对象
-                if isinstance(date_str, str):
-                    date_str = date_str
-                else:
+                if not isinstance(date_str, str):
                     date_str = date_str.isoformat()
                 active_hours = stat['total_active_minutes'] / 60
                 work_completion_rate = (active_hours / LAB_WORK_HOURS) * 100 if LAB_WORK_HOURS > 0 else 0
@@ -498,7 +509,7 @@ class DataAnalyzer:
             save_path = os.path.join(STATIC_DIR, f'calendar_{year}_{month:02d}.png')
 
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
-        plt.close('all')
+        plt.close(fig)
 
         self._maybe_cleanup_images()
 
@@ -508,6 +519,11 @@ class DataAnalyzer:
     def generate_trend_chart(self, start_date: datetime.date,
                               end_date: datetime.date, save_path: str = None) -> Optional[str]:
         """生成趋势图"""
+        with _chart_lock:
+            return self._generate_trend_chart_impl(start_date, end_date, save_path)
+
+    def _generate_trend_chart_impl(self, start_date: datetime.date,
+                                     end_date: datetime.date, save_path: str = None) -> Optional[str]:
         stats = self.db.get_daily_stats(start_date, end_date)
 
         if not stats:
@@ -563,7 +579,7 @@ class DataAnalyzer:
                                       f'trend_{start_date}_{end_date}.png')
 
         plt.savefig(save_path, dpi=CHART_DPI, bbox_inches='tight')
-        plt.close('all')
+        plt.close(fig)
 
         self._maybe_cleanup_images()
 

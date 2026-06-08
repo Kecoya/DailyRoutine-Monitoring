@@ -6,6 +6,11 @@
 钩子回调必须尽快返回，否则会阻塞整个系统的鼠标/键盘输入。
 因此 on_mouse_move / on_mouse_click / on_key_press 回调
 必须做到极致轻量：不加锁、不调用 datetime、不做任何耗时操作。
+
+计数器使用「双缓冲」模式：
+- pynput 回调写入 _active 缓冲区（无锁，纯 += 操作）
+- monitor_loop 通过交换引用来原子地切换缓冲区，然后处理旧数据
+- 这样回调永远不会被阻塞，数据也零丢失
 """
 import time
 import logging
@@ -25,6 +30,27 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
+class _CounterBuffer:
+    """轻量级计数器缓冲区（单线程写入，无需加锁）"""
+    __slots__ = ('mouse_distance', 'mouse_clicks', 'mouse_moves',
+                 'keyboard_presses', 'window_switches', 'window_title')
+
+    def __init__(self):
+        self.mouse_distance = 0.0
+        self.mouse_clicks = 0
+        self.mouse_moves = 0
+        self.keyboard_presses = 0
+        self.window_switches = 0
+        self.window_title = ''
+
+    def reset(self):
+        self.mouse_distance = 0.0
+        self.mouse_clicks = 0
+        self.mouse_moves = 0
+        self.keyboard_presses = 0
+        self.window_switches = 0
+
+
 class ActivityMonitor:
     """活动监控器"""
 
@@ -32,19 +58,18 @@ class ActivityMonitor:
         self.db = Database()
         self.session_id = None
 
-        # ===== 活动计数器 =====
-        # 这些计数器由 pynput 回调线程写入，由 monitor_loop 线程读取/重置。
-        # 不使用锁：Python GIL 保证单条赋值/自增的原子性，
-        # 对于统计用途，偶尔丢失一两次计数完全可以接受。
-        self.mouse_distance = 0.0
-        self.mouse_clicks = 0
-        self.mouse_moves = 0
-        self.keyboard_presses = 0
-        self.window_switches = 0
+        # ===== 双缓冲计数器 =====
+        # _active: pynput 回调写入（无锁）
+        # _pending: monitor_loop 读取后处理
+        # 切换通过交换引用完成（Python 赋值是原子的）
+        self._active = _CounterBuffer()
+        self._pending = _CounterBuffer()
 
-        # 鼠标位置追踪
-        self.last_mouse_pos = None
-        self.last_active_window = None
+        # 鼠标位置追踪（仅在 pynput 回调中使用）
+        self._last_mouse_pos = None
+
+        # 窗口追踪
+        self._last_active_window = None
 
         # 监听器
         self.mouse_listener = None
@@ -54,8 +79,11 @@ class ActivityMonitor:
         self.running = False
         self.monitor_thread = None
 
-        # 最后活动时间戳（用 monotonic 而非 datetime，因为快几十倍）
+        # 最后活动时间戳（monotonic 比 datetime.now 快几十倍）
         self._last_activity_ts = time.monotonic()
+
+        # 用于 stop() 时保护 collect_and_save_data 不与 monitor_loop 并发
+        self._save_lock = threading.Lock()
 
     # ================================================================
     #  pynput 回调 —— 必须极致轻量，不加锁、不调 datetime
@@ -64,181 +92,163 @@ class ActivityMonitor:
 
     def on_mouse_move(self, x, y):
         """鼠标移动事件（每秒数百次调用，必须尽快返回）"""
-        if self.last_mouse_pos:
-            dx = x - self.last_mouse_pos[0]
-            dy = y - self.last_mouse_pos[1]
-            self.mouse_distance += (dx * dx + dy * dy) ** 0.5
-        self.last_mouse_pos = (x, y)
-        self.mouse_moves += 1
+        buf = self._active  # 局部变量加速
+        if self._last_mouse_pos:
+            dx = x - self._last_mouse_pos[0]
+            dy = y - self._last_mouse_pos[1]
+            buf.mouse_distance += (dx * dx + dy * dy) ** 0.5
+        self._last_mouse_pos = (x, y)
+        buf.mouse_moves += 1
         self._last_activity_ts = time.monotonic()
 
     def on_mouse_click(self, x, y, button, pressed):
         """鼠标点击事件"""
         if pressed:
-            self.mouse_clicks += 1
+            self._active.mouse_clicks += 1
             self._last_activity_ts = time.monotonic()
 
     def on_key_press(self, key):
         """键盘按键事件"""
-        self.keyboard_presses += 1
+        self._active.keyboard_presses += 1
         self._last_activity_ts = time.monotonic()
 
     # ================================================================
-    #  以下方法不在 pynput 回调中调用，可以用锁或做耗时操作
+    #  以下方法不在 pynput 回调中调用
     # ================================================================
 
-    def get_active_window_info(self) -> tuple:
-        """获取活动窗口信息"""
+    def _detect_window_switch(self):
+        """检测窗口切换（在 monitor_loop 线程中调用）"""
         try:
             hwnd = win32gui.GetForegroundWindow()
-            window_title = win32gui.GetWindowText(hwnd)
+            title = win32gui.GetWindowText(hwnd) or ''
+            if self._last_active_window and self._last_active_window != title:
+                self._active.window_switches += 1
+            self._last_active_window = title
+            return title
+        except Exception:
+            return ''
 
-            # 检测窗口切换
-            if self.last_active_window and self.last_active_window != window_title:
-                self.window_switches += 1
-            self.last_active_window = window_title
-
-            # 获取窗口数量（所有可见窗口）
-            window_count = 0
+    def _get_window_count(self) -> int:
+        """获取可见窗口数量"""
+        try:
+            count = 0
 
             def enum_handler(hwnd, ctx):
-                nonlocal window_count
+                nonlocal count
                 if win32gui.IsWindowVisible(hwnd):
-                    window_count += 1
+                    count += 1
 
             win32gui.EnumWindows(enum_handler, None)
-
-            return window_title, window_count
-        except Exception as e:
-            logger.error(f"获取窗口信息失败: {e}")
-            return "", 0
+            return count
+        except Exception:
+            return 0
 
     def get_system_usage(self) -> tuple:
-        """获取系统资源使用情况（非阻塞方式）"""
+        """获取系统资源使用情况（非阻塞）"""
         try:
-            cpu_percent = psutil.cpu_percent(interval=None)
-            memory_percent = psutil.virtual_memory().percent
-            return cpu_percent, memory_percent
-        except Exception as e:
-            logger.error(f"获取系统资源失败: {e}")
+            return psutil.cpu_percent(interval=None), psutil.virtual_memory().percent
+        except Exception:
             return 0, 0
 
     def calculate_busy_index(self, mouse_activity: float, keyboard_activity: float,
                              window_activity: float, system_activity: float) -> float:
         """计算忙碌指数（0-100）"""
-        busy_index = (
+        return min(100, max(0, (
             mouse_activity * BUSY_WEIGHTS['mouse_activity'] +
             keyboard_activity * BUSY_WEIGHTS['keyboard_activity'] +
             window_activity * BUSY_WEIGHTS['window_switches'] +
             system_activity * BUSY_WEIGHTS['system_usage']
-        )
-        return min(100, max(0, busy_index))
+        )))
 
     def is_idle(self) -> bool:
         """判断是否处于空闲状态"""
         return (time.monotonic() - self._last_activity_ts) > IDLE_THRESHOLD
 
-    def _snapshot_and_reset_counters(self):
-        """读取当前计数器快照并重置（在 monitor_loop 线程中调用）"""
-        current_mouse_distance = self.mouse_distance
-        current_mouse_clicks = self.mouse_clicks
-        current_mouse_moves = self.mouse_moves
-        current_keyboard_presses = self.keyboard_presses
-        current_window_switches = self.window_switches
-
-        # 重置计数器（写 0 是原子操作，GIL 保证安全）
-        self.mouse_distance = 0.0
-        self.mouse_clicks = 0
-        self.mouse_moves = 0
-        self.keyboard_presses = 0
-        self.window_switches = 0
-
-        return (current_mouse_distance, current_mouse_clicks, current_mouse_moves,
-                current_keyboard_presses, current_window_switches)
+    def _swap_buffers(self):
+        """原子交换活跃/待处理缓冲区"""
+        old = self._active
+        self._active = self._pending
+        self._pending = old
+        return old
 
     def collect_and_save_data(self):
-        """收集并保存数据"""
-        try:
-            # 获取窗口信息
-            active_window, window_count = self.get_active_window_info()
+        """收集并保存数据（线程安全：通过 _save_lock 防止 stop 和 monitor_loop 并发调用）"""
+        if not self._save_lock.acquire(blocking=False):
+            return  # 另一个线程正在保存，跳过本次
 
-            # 获取系统资源使用
+        try:
+            # 检测窗口切换
+            active_window = self._detect_window_switch()
+
+            # 获取系统资源
             cpu_usage, memory_usage = self.get_system_usage()
 
-            # 读取并重置计数器（快照方式，不持锁）
-            (current_mouse_distance, current_mouse_clicks, current_mouse_moves,
-             current_keyboard_presses, current_window_switches
-             ) = self._snapshot_and_reset_counters()
+            # 交换缓冲区（原子操作，pynput 回调立即开始写入新的 _active）
+            buf = self._swap_buffers()
 
-            # 标准化活动指标（基于MONITOR_INTERVAL的期望值）
+            # 处理旧缓冲区数据
+            window_count = self._get_window_count()
+
             interval_factor = MONITOR_INTERVAL / 60
 
             mouse_activity_score = min(100, (
-                (current_mouse_distance / (5000 * interval_factor) * 50) +
-                (current_mouse_clicks / (50 * interval_factor) * 30) +
-                (current_mouse_moves / (500 * interval_factor) * 20)
+                (buf.mouse_distance / (5000 * interval_factor) * 50) +
+                (buf.mouse_clicks / (50 * interval_factor) * 30) +
+                (buf.mouse_moves / (500 * interval_factor) * 20)
             ))
 
-            keyboard_activity_score = min(100, current_keyboard_presses / (300 * interval_factor) * 100)
-
-            window_activity_score = min(100, current_window_switches / (10 * interval_factor) * 100)
-
+            keyboard_activity_score = min(100, buf.keyboard_presses / (300 * interval_factor) * 100)
+            window_activity_score = min(100, buf.window_switches / (10 * interval_factor) * 100)
             system_activity_score = (cpu_usage + memory_usage) / 2
 
-            # 计算忙碌指数
             busy_index = self.calculate_busy_index(
-                mouse_activity_score,
-                keyboard_activity_score,
-                window_activity_score,
-                system_activity_score
+                mouse_activity_score, keyboard_activity_score,
+                window_activity_score, system_activity_score
             )
 
-            # 判断是否空闲
             is_idle = self.is_idle()
-
-            # 如果空闲，忙碌指数设为0
             if is_idle:
                 busy_index = 0
 
-            # 准备记录数据
             record = {
                 'timestamp': datetime.now(),
-                'mouse_distance': round(current_mouse_distance, 2),
-                'mouse_clicks': current_mouse_clicks,
-                'mouse_moves': current_mouse_moves,
-                'keyboard_presses': current_keyboard_presses,
-                'window_switches': current_window_switches,
+                'mouse_distance': round(buf.mouse_distance, 2),
+                'mouse_clicks': buf.mouse_clicks,
+                'mouse_moves': buf.mouse_moves,
+                'keyboard_presses': buf.keyboard_presses,
+                'window_switches': buf.window_switches,
                 'active_windows': window_count,
                 'cpu_usage': round(cpu_usage, 2),
                 'memory_usage': round(memory_usage, 2),
                 'busy_index': round(busy_index, 2),
                 'is_idle': is_idle,
-                'active_window_title': active_window[:200]
+                'active_window_title': (active_window or '')[:200]
             }
 
-            # 保存到数据库
             self.db.save_activity_record(record)
 
             logger.info(f"数据已保存({MONITOR_INTERVAL}s) - 忙碌指数: {busy_index:.2f}, "
-                        f"鼠标: {current_mouse_clicks}次点击/{current_mouse_distance:.0f}px, "
-                        f"键盘: {current_keyboard_presses}次按键, "
-                        f"窗口切换: {current_window_switches}次")
+                        f"鼠标: {buf.mouse_clicks}次点击/{buf.mouse_distance:.0f}px, "
+                        f"键盘: {buf.keyboard_presses}次按键, "
+                        f"窗口切换: {buf.window_switches}次")
+
+            # 清空旧缓冲区以备下次交换使用
+            buf.reset()
 
         except Exception as e:
             logger.error(f"收集和保存数据失败: {e}", exc_info=True)
+        finally:
+            self._save_lock.release()
 
     def monitor_loop(self):
         """监控循环"""
         logger.info("监控循环开始")
-
-        # 首次调用 cpu_percent 进行初始化
         psutil.cpu_percent(interval=None)
 
         while self.running:
             try:
                 self.collect_and_save_data()
 
-                # 每小时更新一次每日统计
                 now = datetime.now()
                 if now.minute == 0 and now.second < MONITOR_INTERVAL:
                     self.db.update_daily_stats(now.date())
@@ -257,26 +267,22 @@ class ActivityMonitor:
 
         logger.info("正在启动监控服务...")
 
-        # 创建新会话
         self.session_id = self.db.start_session()
         if self.session_id < 0:
             logger.error("创建会话失败")
             return
 
-        # 启动鼠标监听器
         self.mouse_listener = mouse.Listener(
             on_move=self.on_mouse_move,
             on_click=self.on_mouse_click
         )
         self.mouse_listener.start()
 
-        # 启动键盘监听器
         self.keyboard_listener = keyboard.Listener(
             on_press=self.on_key_press
         )
         self.keyboard_listener.start()
 
-        # 启动监控线程
         self.running = True
         self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
         self.monitor_thread.start()
@@ -293,40 +299,37 @@ class ActivityMonitor:
 
         self.running = False
 
-        # 保存最后一次数据
+        # 先等 monitor_loop 退出，避免并发 collect_and_save_data
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=10)
+
+        # 保存最后一次数据（此时 monitor_loop 已停止，无并发风险）
         self.collect_and_save_data()
 
         # 结束会话
-        if self.session_id:
+        if self.session_id is not None and self.session_id > 0:
             self.db.end_session(self.session_id)
             self.db.update_daily_stats(datetime.now().date())
 
         # 停止监听器
-        if self.mouse_listener:
-            try:
-                self.mouse_listener.stop()
-            except Exception as e:
-                logger.warning(f"停止鼠标监听器时出错: {e}")
-
-        if self.keyboard_listener:
-            try:
-                self.keyboard_listener.stop()
-            except Exception as e:
-                logger.warning(f"停止键盘监听器时出错: {e}")
-
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=5)
+        for listener in (self.mouse_listener, self.keyboard_listener):
+            if listener:
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
 
         logger.info("监控服务已停止")
 
     def get_current_status(self) -> dict:
         """获取当前状态"""
+        buf = self._active
         return {
             'running': self.running,
             'session_id': self.session_id,
-            'mouse_clicks': self.mouse_clicks,
-            'keyboard_presses': self.keyboard_presses,
-            'window_switches': self.window_switches,
+            'mouse_clicks': buf.mouse_clicks,
+            'keyboard_presses': buf.keyboard_presses,
+            'window_switches': buf.window_switches,
             'is_idle': self.is_idle(),
             'last_activity': datetime.now().isoformat()
         }

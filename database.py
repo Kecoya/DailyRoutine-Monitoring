@@ -5,7 +5,7 @@ import sqlite3
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
-from config import DATABASE_PATH
+from config import DATABASE_PATH, NAP_TIME_START, NAP_TIME_END
 
 logger = logging.getLogger(__name__)
 
@@ -304,26 +304,39 @@ class Database:
 
             activity_stats = cursor.fetchone()
 
-            # 检测午休时间
+            # 检测午休时间（使用配置值而非硬编码）
             cursor.execute('''
                 SELECT
                     SUM(CASE WHEN is_idle = 1
-                        AND CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 12 AND 14
+                        AND CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN ? AND ?
                         THEN 1 ELSE 0 END) as nap_minutes
                 FROM activity_records
                 WHERE timestamp BETWEEN ? AND ?
-            ''', (start_of_day, end_of_day))
+            ''', (int(NAP_TIME_START), int(NAP_TIME_END), start_of_day, end_of_day))
 
             nap_info = cursor.fetchone()
 
-            # 插入或更新每日统计
+            # 插入或更新每日统计（使用 ON CONFLICT 避免 DELETE+INSERT 导致 id 自增）
             cursor.execute('''
-                INSERT OR REPLACE INTO daily_stats (
+                INSERT INTO daily_stats (
                     stat_date, first_boot_time, last_shutdown_time,
                     total_active_minutes, total_idle_minutes, nap_minutes,
                     total_mouse_clicks, total_key_presses, total_window_switches,
                     total_mouse_distance, average_busy_index, max_busy_index, work_sessions
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stat_date) DO UPDATE SET
+                    first_boot_time = excluded.first_boot_time,
+                    last_shutdown_time = excluded.last_shutdown_time,
+                    total_active_minutes = excluded.total_active_minutes,
+                    total_idle_minutes = excluded.total_idle_minutes,
+                    nap_minutes = excluded.nap_minutes,
+                    total_mouse_clicks = excluded.total_mouse_clicks,
+                    total_key_presses = excluded.total_key_presses,
+                    total_window_switches = excluded.total_window_switches,
+                    total_mouse_distance = excluded.total_mouse_distance,
+                    average_busy_index = excluded.average_busy_index,
+                    max_busy_index = excluded.max_busy_index,
+                    work_sessions = excluded.work_sessions
             ''', (
                 date,
                 session_info['first_boot'],

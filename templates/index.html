@@ -625,6 +625,11 @@
 
     <script>
         // ===== Toast 通知系统 =====
+        // 安全格式化数字（防止 null/undefined.toFixed() 崩溃）
+        function fmt(val, digits = 1) {
+            return (val != null && !isNaN(val)) ? Number(val).toFixed(digits) : '0.' + '0'.repeat(digits);
+        }
+
         function showToast(message, type = 'success') {
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');
@@ -707,7 +712,7 @@
                     const completionRate = (d.work_completion_rate !== undefined && d.work_completion_rate !== null)
                         ? d.work_completion_rate.toFixed(1) : '0.0';
                     const mouseDist = d.total_mouse_distance ? d.total_mouse_distance.toFixed(1) : '0.0';
-                    const busyIdx = d.avg_busy_index ? d.avg_busy_index.toFixed(1) : '0.0';
+                    const busyIdx = d.avg_busy_index ? fmt(d.avg_busy_index) : '0.0';
 
                     statsEl.innerHTML = `
                         <div class="stat-card">
@@ -806,35 +811,35 @@
                                 </div>` : ''}
                                 <div class="summary-item">
                                     <div class="label">总活动时长</div>
-                                    <div class="value">${d.total_active_hours.toFixed(1)}h</div>
+                                    <div class="value">${fmt(d.total_active_hours)}h</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">日均活动时长</div>
-                                    <div class="value highlight">${d.avg_daily_active_hours.toFixed(1)}h</div>
+                                    <div class="value highlight">${fmt(d.avg_daily_active_hours)}h</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">鼠标移动距离</div>
-                                    <div class="value">${d.total_mouse_distance_m ? d.total_mouse_distance_m.toFixed(1) : '0.0'}m</div>
+                                    <div class="value">${fmt(d.total_mouse_distance_m)}m</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均忙碌指数</div>
-                                    <div class="value">${d.avg_busy_index.toFixed(1)}</div>
+                                    <div class="value">${fmt(d.avg_busy_index)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均工作强度</div>
-                                    <div class="value">${d.avg_work_intensity ? d.avg_work_intensity.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_work_intensity)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均专注度</div>
-                                    <div class="value">${d.avg_focus_score ? d.avg_focus_score.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_focus_score)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均效率指数</div>
-                                    <div class="value">${d.avg_efficiency ? d.avg_efficiency.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_efficiency)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">作息规律性</div>
-                                    <div class="value">${d.regularity_score.toFixed(1)}</div>
+                                    <div class="value">${fmt(d.regularity_score)}</div>
                                 </div>
                             </div>
                             ${totalExcluded > 0 ? `
@@ -880,35 +885,35 @@
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">总活动时长</div>
-                                    <div class="value">${d.total_active_hours.toFixed(1)}h</div>
+                                    <div class="value">${fmt(d.total_active_hours)}h</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">日均活动时长</div>
-                                    <div class="value highlight">${d.avg_daily_active_hours.toFixed(1)}h</div>
+                                    <div class="value highlight">${fmt(d.avg_daily_active_hours)}h</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">鼠标移动距离</div>
-                                    <div class="value">${d.total_mouse_distance_m ? d.total_mouse_distance_m.toFixed(1) : '0.0'}m</div>
+                                    <div class="value">${fmt(d.total_mouse_distance_m)}m</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均忙碌指数</div>
-                                    <div class="value">${d.avg_busy_index.toFixed(1)}</div>
+                                    <div class="value">${fmt(d.avg_busy_index)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均工作强度</div>
-                                    <div class="value">${d.avg_work_intensity ? d.avg_work_intensity.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_work_intensity)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均专注度</div>
-                                    <div class="value">${d.avg_focus_score ? d.avg_focus_score.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_focus_score)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均效率指数</div>
-                                    <div class="value">${d.avg_efficiency ? d.avg_efficiency.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_efficiency)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">作息规律性</div>
-                                    <div class="value">${d.regularity_score.toFixed(1)}</div>
+                                    <div class="value">${fmt(d.regularity_score)}</div>
                                 </div>
                             </div>
                         </div>
@@ -993,35 +998,35 @@
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">总活动时长</div>
-                                    <div class="value">${d.total_active_hours.toFixed(1)}h</div>
+                                    <div class="value">${fmt(d.total_active_hours)}h</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">日均活动时长</div>
-                                    <div class="value highlight">${d.avg_daily_active_hours.toFixed(1)}h</div>
+                                    <div class="value highlight">${fmt(d.avg_daily_active_hours)}h</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">鼠标移动距离</div>
-                                    <div class="value">${d.total_mouse_distance_m ? d.total_mouse_distance_m.toFixed(1) : '0.0'}m</div>
+                                    <div class="value">${fmt(d.total_mouse_distance_m)}m</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均忙碌指数</div>
-                                    <div class="value">${d.avg_busy_index.toFixed(1)}</div>
+                                    <div class="value">${fmt(d.avg_busy_index)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均工作强度</div>
-                                    <div class="value">${d.avg_work_intensity ? d.avg_work_intensity.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_work_intensity)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均专注度</div>
-                                    <div class="value">${d.avg_focus_score ? d.avg_focus_score.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_focus_score)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">平均效率指数</div>
-                                    <div class="value">${d.avg_efficiency ? d.avg_efficiency.toFixed(1) : '0.0'}</div>
+                                    <div class="value">${fmt(d.avg_efficiency)}</div>
                                 </div>
                                 <div class="summary-item">
                                     <div class="label">作息规律性</div>
-                                    <div class="value">${d.regularity_score.toFixed(1)}</div>
+                                    <div class="value">${fmt(d.regularity_score)}</div>
                                 </div>
                             </div>
                         </div>
