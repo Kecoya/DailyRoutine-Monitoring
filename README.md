@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
-  <img src="https://img.shields.io/badge/Version-1.1.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-1.2.0-blue?style=flat-square" alt="Version">
 </p>
 
 <h1 align="center">📊 DailyRoutine Monitoring</h1>
@@ -140,8 +140,8 @@ python setup_autostart.py
 DailyRoutine-Monitoring/
 ├── main.py                 # 程序入口（含单实例检测、stdio 修复）
 ├── config.py               # 全局配置文件
-├── monitor_service.py      # 核心监控服务（鼠标/键盘/窗口/系统）
-├── database.py             # 数据库访问层（SQLite）
+├── monitor_service.py      # 核心监控服务（双缓冲计数器，pynput 零阻塞回调）
+├── database.py             # 数据库访问层（SQLite WAL 模式）
 ├── analyzer.py             # 数据分析模块（统计 + 图表生成）
 ├── web_app.py              # Flask Web 服务器
 ├── silent_launcher.py      # 静默启动器（用于开机自启，无窗口）
@@ -345,7 +345,7 @@ openpyxl       # Excel 导出
 - [x] CSV/Excel 数据导出
 - [x] 开机自启动（静默运行）
 - [x] 单实例检测（防止多开）
-- [x] 线程安全（计数器加锁）
+- [x] 线程安全（双缓冲计数器 + 图表生成锁）
 - [ ] 应用程序使用时长统计
 - [ ] 系统托盘图标 + 右键菜单
 - [ ] 多显示器支持
