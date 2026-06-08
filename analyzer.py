@@ -13,20 +13,11 @@ import pandas as pd
 import numpy as np
 
 import matplotlib
-import matplotlib.pyplot as plt
 matplotlib.use('Agg')  # 使用非 GUI 后端
 
-# 清除 matplotlib 字体缓存（解决缓存导致的中文字体不生效问题）
-import matplotlib.font_manager as fm
-_font_cache_dir = matplotlib.get_cachedir()
-_font_cache_file = os.path.join(_font_cache_dir, 'fontlist-v330.json') if _font_cache_dir else ''
-if _font_cache_file and os.path.exists(_font_cache_file):
-    try:
-        os.remove(_font_cache_file)
-    except OSError:
-        pass
-
 import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from database import Database
 from config import CHART_DPI, CHART_FIGSIZE, HEATMAP_FIGSIZE, STATIC_DIR, PIXELS_PER_METER, LAB_WORK_HOURS
 
@@ -40,8 +31,6 @@ sns.set_palette("husl")
 # 优先使用 SimHei（黑体），备选微软雅黑
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'KaiTi', 'DejaVu Sans', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
-# 强制 matplotlib 重新扫描系统字体
-fm.fontManager.__init__()
 
 # 清理计数器，用于可靠地触发图片清理（替代 hash % 10 这种不可靠方式）
 _cleanup_counter = 0
