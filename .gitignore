@@ -42,6 +42,9 @@ data/*.csv
 data/*.xlsx
 data/*.xls
 
+# Camera captures (包含个人照片，不上传)
+data/captures/
+
 # Log files (包含用户活动记录，不上传)
 logs/*.log
 

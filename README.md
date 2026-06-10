@@ -2,21 +2,21 @@
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
-  <img src="https://img.shields.io/badge/Version-1.2.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-1.3.0-blue?style=flat-square" alt="Version">
 </p>
 
 <h1 align="center">📊 DailyRoutine Monitoring</h1>
 
 <p align="center">
   <strong>研究生 / 科研工作者桌面作息追踪与工作量分析系统</strong><br>
-  实时监控 · 数据分析 · 作息追踪 · 隐私安全
+  实时监控 · 数据分析 · 作息追踪 · 摄像头抓拍 · 隐私安全
 </p>
 
 ---
 
 ## 📖 项目简介
 
-**DailyRoutine Monitoring** 是一款运行在 Windows 桌面的轻量级作息追踪与工作量分析工具。程序以后台服务形式运行，通过监控鼠标、键盘、窗口和系统活动，自动生成忙碌指数、工作达成率、专注度等多维度分析报告，并通过美观的 Web 界面可视化呈现。
+**DailyRoutine Monitoring** 是一款运行在 Windows 桌面的轻量级作息追踪与工作量分析工具。程序以后台服务形式运行，通过监控鼠标、键盘、窗口和系统活动，自动生成忙碌指数、工作达成率、专注度等多维度分析报告，并通过美观的 Web 界面可视化呈现。同时支持定时摄像头抓拍，自动记录工作场景。
 
 **适用场景：**
 - 📚 研究生 / 科研工作者追踪每日实验室坐班时长
@@ -55,10 +55,20 @@
 - 📥 **CSV 导出**：原始数据，方便 Python / Excel 进一步分析
 - 📥 **Excel 导出**：含每日明细 + 汇总统计双工作表
 
+### 📷 摄像头抓拍（v1.3.0 新增）
+- 🎥 **时间段抓拍**：配置多个每日时间段，按指定间隔（如每 60 秒）自动拍照
+- 📌 **固定时间抓拍**：在每天特定时间点（如 08:50、14:50、19:50）永久拍照
+- 🎞️ **GIF 动图**：每个时间段结束时自动将临时照片合成为 GIF 动图
+- 🏷️ **时间戳水印**：每张照片自动叠加拍摄时间
+- 🧹 **自动清理**：过期临时照片自动删除，GIF 和永久照片长期保存
+- 🖥️ **Web 查看**：在 Web 界面中浏览临时抓拍、永久抓拍和 GIF 动图
+- 🔒 **隐私安全**：摄像头按需初始化、空闲自动释放，照片仅存本地
+
 ### 隐私与安全
 - 🔒 所有数据存储于本地 `data/activity.db`（SQLite）
 - 🔒 不记录键盘输入内容，仅统计按键次数
 - 🔒 不截屏、不录音、不联网上传
+- 🔒 摄像头照片仅存储于本地，可通过配置禁用抓拍功能
 - 🔒 支持自定义数据保留天数，过期自动清理
 
 ---
@@ -88,6 +98,11 @@
 ### 数据导出
 - CSV / Excel 双格式支持
 - Excel 包含"每日统计"和"汇总统计"两个工作表
+
+### 摄像头抓拍
+- 服务状态卡片：抓拍运行状态、摄像头连接状态、活跃线程数
+- 图片网格：浏览临时抓拍、永久抓拍和 GIF 动图
+- 点击图片可查看大图
 
 </details>
 
@@ -141,6 +156,7 @@ DailyRoutine-Monitoring/
 ├── main.py                 # 程序入口（含单实例检测、stdio 修复）
 ├── config.py               # 全局配置文件
 ├── monitor_service.py      # 核心监控服务（双缓冲计数器，pynput 零阻塞回调）
+├── camera_service.py       # 摄像头抓拍服务（时间段抓拍 + 固定时间抓拍 + GIF 生成）
 ├── database.py             # 数据库访问层（SQLite WAL 模式）
 ├── analyzer.py             # 数据分析模块（统计 + 图表生成）
 ├── web_app.py              # Flask Web 服务器
@@ -154,6 +170,7 @@ DailyRoutine-Monitoring/
 │   └── index.html          # Web 前端页面
 ├── static/                 # 运行时生成的图表（自动清理）
 ├── data/                   # 数据库文件（.gitignore 排除）
+│   └── captures/           # 摄像头抓拍数据（.gitignore 排除）
 └── logs/                   # 日志文件（.gitignore 排除）
 ```
 
@@ -186,6 +203,23 @@ BUSY_WEIGHTS = {
 LAB_WORK_HOURS = 8.5        # 每日标准工作时长（小时），用于计算工作达成率
 PIXELS_PER_METER = 5200     # 鼠标距离换算系数，根据显示器调整
 DATA_RETENTION_DAYS = 365   # 数据保留天数
+
+# ===== 摄像头抓拍配置 =====
+CAPTURE_ENABLED = True              # 是否启用摄像头抓拍（设为 False 可完全禁用）
+CAPTURE_CAMERA_ID = 0               # 摄像头设备 ID
+CAPTURE_TIME_RANGES = [             # 时间段抓拍（保存为临时文件，结束时生成 GIF）
+    {"start": "11:30", "end": "14:30", "interval": 60},
+    {"start": "17:30", "end": "18:30", "interval": 60},
+    {"start": "21:30", "end": "23:59", "interval": 60},
+]
+CAPTURE_FIXED_TIMES = [             # 固定时间点抓拍（永久保存）
+    {"time": "08:50", "description": "morning"},
+    {"time": "14:50", "description": "noon"},
+    {"time": "19:50", "description": "night"},
+]
+CAPTURE_GIF_FPS = 24                # GIF 帧率
+CAPTURE_CLEANUP_DAYS = 7            # 临时照片保留天数
+CAPTURE_TIMESTAMP_ENABLED = True    # 是否在照片上添加时间戳水印
 ```
 
 ### 关于 `MONITOR_INTERVAL`
@@ -259,6 +293,7 @@ BusyIndex = mouse_score × 0.30 + keyboard_score × 0.30
 | **键盘监控** | 仅记录按键次数，不记录按键内容 |
 | **鼠标监控** | 仅记录移动距离和点击次数，不记录屏幕坐标 |
 | **窗口标题** | 记录活动窗口标题用于分析，可选择性禁用 |
+| **摄像头抓拍** | 摄像头按需初始化、空闲自动释放，照片仅存本地，可配置禁用 |
 | **数据清理** | 支持自定义保留天数，过期数据自动清除 |
 | **数据导出** | 所有数据可导出为 CSV/Excel，用户完全掌控 |
 
@@ -272,6 +307,7 @@ BusyIndex = mouse_score × 0.30 + keyboard_score × 0.30
 | Web 框架 | Flask |
 | 数据库 | SQLite (WAL 模式) |
 | 系统监控 | psutil, pynput, pywin32 (win32gui) |
+| 摄像头抓拍 | opencv-python, schedule, Pillow |
 | 数据分析 | pandas, numpy |
 | 可视化 | matplotlib, seaborn |
 | 数据导出 | openpyxl |
@@ -291,6 +327,9 @@ pandas         # 数据分析
 numpy          # 数值计算
 seaborn        # 统计可视化
 openpyxl       # Excel 导出
+opencv-python  # 摄像头抓拍
+schedule       # 定时任务调度
+Pillow         # GIF 动图生成
 ```
 
 ---
@@ -346,6 +385,7 @@ openpyxl       # Excel 导出
 - [x] 开机自启动（静默运行）
 - [x] 单实例检测（防止多开）
 - [x] 线程安全（双缓冲计数器 + 图表生成锁）
+- [x] 摄像头定时抓拍（时间段抓拍 + 固定时间抓拍 + GIF 生成）
 - [ ] 应用程序使用时长统计
 - [ ] 系统托盘图标 + 右键菜单
 - [ ] 多显示器支持

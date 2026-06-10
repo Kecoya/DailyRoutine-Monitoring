@@ -472,6 +472,39 @@
             margin-left: 20px;
         }
 
+        /* ===== Capture Image Grid ===== */
+        .capture-card {
+            background: var(--bg);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            cursor: pointer;
+        }
+
+        .capture-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow);
+        }
+
+        .capture-card img {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+            display: block;
+        }
+
+        .capture-card .info {
+            padding: 8px 12px;
+            font-size: 0.82em;
+            color: var(--text-secondary);
+        }
+
+        .capture-card .info .time {
+            font-weight: 600;
+            color: var(--text);
+        }
+
         /* ===== Responsive ===== */
         @media (max-width: 768px) {
             .container {
@@ -518,6 +551,7 @@
             <button class="tab" data-tab="month">📈 本月报表</button>
             <button class="tab" data-tab="custom">🔍 自定义分析</button>
             <button class="tab" data-tab="export">💾 数据导出</button>
+            <button class="tab" data-tab="camera">📷 摄像头抓拍</button>
         </div>
 
         <!-- Today -->
@@ -615,6 +649,23 @@
             </div>
         </div>
 
+        <!-- Camera Capture -->
+        <div id="camera" class="content">
+            <h2>📷 摄像头抓拍</h2>
+            <div id="cameraStatus" class="stats-grid">
+                <div class="loading-container">
+                    <div class="spinner"></div>
+                    <div class="loading-text">加载中...</div>
+                </div>
+            </div>
+            <div style="margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <button class="btn" onclick="loadCaptureImages('temp')">🕐 临时抓拍</button>
+                <button class="btn btn-secondary" onclick="loadCaptureImages('permanent')">📌 永久抓拍</button>
+                <button class="btn" style="background: var(--warning);" onclick="loadGifs()">🎬 GIF 动图</button>
+            </div>
+            <div id="captureGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;"></div>
+        </div>
+
         <footer>
             <p>&copy; <span id="footerYear"></span> 系统监控与作息分析程序 &nbsp;|&nbsp; 数据仅存储于本地，隐私安全</p>
         </footer>
@@ -670,6 +721,7 @@
                 if (tabName === 'today') loadTodayData();
                 else if (tabName === 'week') loadWeekReport();
                 else if (tabName === 'month') loadMonthReport();
+                else if (tabName === 'camera') { loadCameraStatus(); loadCaptureImages('temp'); }
             });
         });
 
@@ -1075,6 +1127,86 @@
             document.getElementById('customEnd').value = today;
             document.getElementById('exportStart').value = weekAgo;
             document.getElementById('exportEnd').value = today;
+        }
+
+        // ===== Camera Capture =====
+        async function loadCameraStatus() {
+            const el = document.getElementById('cameraStatus');
+            try {
+                const resp = await fetch('/api/camera/status');
+                const result = await resp.json();
+                if (result.success) {
+                    const d = result.data;
+                    const statusColor = d.running ? 'var(--success)' : 'var(--danger)';
+                    const statusText = d.running ? '运行中' : '已停止';
+                    el.innerHTML = `
+                        <div class="stat-card">
+                            <div class="label">摄像头抓拍</div>
+                            <div class="value" style="font-size:1.4em; color:${statusColor}">${statusText}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="label">摄像头状态</div>
+                            <div class="value" style="font-size:1.4em">${d.camera_ready ? '已连接' : '未连接'}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="label">活跃抓拍线程</div>
+                            <div class="value">${d.active_threads}</div>
+                        </div>
+                    `;
+                } else {
+                    el.innerHTML = errorHTML(result.message || '摄像头服务未初始化');
+                }
+            } catch (e) {
+                el.innerHTML = errorHTML('摄像头服务连接失败');
+            }
+        }
+
+        async function loadCaptureImages(type) {
+            const grid = document.getElementById('captureGrid');
+            grid.innerHTML = loadingHTML('加载抓拍图片...');
+            try {
+                const resp = await fetch(`/api/camera/captures?type=${type}&limit=30`);
+                const result = await resp.json();
+                if (result.success && result.data.length > 0) {
+                    grid.innerHTML = result.data.map(f => `
+                        <div class="capture-card" onclick="window.open('${f.url}','_blank')">
+                            <img src="${f.url}" alt="${f.filename}" loading="lazy">
+                            <div class="info">
+                                <div class="time">${f.timestamp ? new Date(f.timestamp).toLocaleString('zh-CN') : f.filename}</div>
+                                <div>${f.size_kb} KB</div>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    grid.innerHTML = '<p style="color:var(--text-secondary);padding:24px;">暂无抓拍数据</p>';
+                }
+            } catch (e) {
+                grid.innerHTML = errorHTML('加载失败');
+            }
+        }
+
+        async function loadGifs() {
+            const grid = document.getElementById('captureGrid');
+            grid.innerHTML = loadingHTML('加载 GIF 动图...');
+            try {
+                const resp = await fetch('/api/camera/gifs?limit=30');
+                const result = await resp.json();
+                if (result.success && result.data.length > 0) {
+                    grid.innerHTML = result.data.map(f => `
+                        <div class="capture-card" onclick="window.open('${f.url}','_blank')">
+                            <img src="${f.url}" alt="${f.filename}" loading="lazy" style="height:auto;">
+                            <div class="info">
+                                <div class="time">${f.filename}</div>
+                                <div>${f.size_kb} KB</div>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    grid.innerHTML = '<p style="color:var(--text-secondary);padding:24px;">暂无 GIF 动图</p>';
+                }
+            } catch (e) {
+                grid.innerHTML = errorHTML('加载失败');
+            }
         }
 
         // ===== Footer Year =====

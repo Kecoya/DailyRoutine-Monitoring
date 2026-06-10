@@ -22,6 +22,10 @@ from pynput import mouse, keyboard
 import win32gui
 
 from database import Database
+try:
+    from camera_service import CameraService
+except ImportError:
+    CameraService = None
 from config import (
     MONITOR_INTERVAL, IDLE_THRESHOLD,
     BUSY_WEIGHTS
@@ -84,6 +88,9 @@ class ActivityMonitor:
 
         # 用于 stop() 时保护 collect_and_save_data 不与 monitor_loop 并发
         self._save_lock = threading.Lock()
+
+        # 摄像头抓拍服务（opencv-python 未安装时为 None）
+        self.camera_service = CameraService() if CameraService else None
 
     # ================================================================
     #  pynput 回调 —— 必须极致轻量，不加锁、不调 datetime
@@ -287,6 +294,10 @@ class ActivityMonitor:
         self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
         self.monitor_thread.start()
 
+        # 启动摄像头抓拍服务
+        if self.camera_service:
+            self.camera_service.start()
+
         logger.info(f"监控服务已启动 - 会话ID: {self.session_id}")
 
     def stop(self):
@@ -302,6 +313,10 @@ class ActivityMonitor:
         # 先等 monitor_loop 退出，避免并发 collect_and_save_data
         if self.monitor_thread:
             self.monitor_thread.join(timeout=10)
+
+        # 停止摄像头抓拍服务
+        if self.camera_service:
+            self.camera_service.stop()
 
         # 保存最后一次数据（此时 monitor_loop 已停止，无并发风险）
         self.collect_and_save_data()
@@ -324,6 +339,9 @@ class ActivityMonitor:
     def get_current_status(self) -> dict:
         """获取当前状态"""
         buf = self._active
+        camera_status = self.camera_service.get_status() if self.camera_service else {
+            'enabled': False, 'running': False, 'active_threads': 0, 'camera_ready': False
+        }
         return {
             'running': self.running,
             'session_id': self.session_id,
@@ -331,7 +349,8 @@ class ActivityMonitor:
             'keyboard_presses': buf.keyboard_presses,
             'window_switches': buf.window_switches,
             'is_idle': self.is_idle(),
-            'last_activity': datetime.now().isoformat()
+            'last_activity': datetime.now().isoformat(),
+            'camera': camera_status,
         }
 
 

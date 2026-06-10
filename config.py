@@ -16,6 +16,14 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
+# 摄像头抓拍目录
+CAPTURE_TEMP_DIR = os.path.join(DATA_DIR, 'captures', 'temp_captures')
+CAPTURE_PERMANENT_DIR = os.path.join(DATA_DIR, 'captures', 'permanent_captures')
+CAPTURE_GIF_DIR = os.path.join(DATA_DIR, 'captures', 'gif_animations')
+os.makedirs(CAPTURE_TEMP_DIR, exist_ok=True)
+os.makedirs(CAPTURE_PERMANENT_DIR, exist_ok=True)
+os.makedirs(CAPTURE_GIF_DIR, exist_ok=True)
+
 # 数据库配置
 DATABASE_PATH = os.path.join(DATA_DIR, 'activity.db')
 
@@ -62,4 +70,36 @@ LAB_WORK_HOURS = 8.5  # 默认实验室坐班时长（小时）
 # 基于典型24寸 1920×1080显示器（宽约53cm）的经验值
 # 可根据实际显示器调整此值
 PIXELS_PER_METER = 5200  # 像素/米（约 1像素 = 0.28mm）
+
+# ===== 摄像头抓拍配置 =====
+CAPTURE_ENABLED = True          # 是否启用摄像头抓拍功能
+CAPTURE_CAMERA_ID = 0           # 摄像头设备 ID
+
+# 时间段抓拍（在指定时间段内按指定间隔抓拍，保存为临时文件，结束时生成GIF）
+CAPTURE_TIME_RANGES = [
+    {"start": "11:30", "end": "14:30", "interval": 60},
+    {"start": "17:30", "end": "18:30", "interval": 60},
+    {"start": "21:30", "end": "23:59", "interval": 60},
+]
+
+# 固定时间点抓拍（永久保存）
+CAPTURE_FIXED_TIMES = [
+    {"time": "08:50", "description": "morning"},
+    {"time": "14:50", "description": "noon"},
+    {"time": "19:50", "description": "night"},
+]
+
+# 临时文件管理
+CAPTURE_MAX_TEMP_FILES = 1000      # 单个时间段最大临时抓拍数量
+CAPTURE_AUTO_CLEANUP = True        # 是否自动清理过期临时文件
+CAPTURE_CLEANUP_DAYS = 7           # 临时文件保留天数
+
+# GIF 动图配置
+CAPTURE_GIF_FPS = 24               # GIF 帧率
+
+# 时间戳水印配置
+CAPTURE_TIMESTAMP_ENABLED = True           # 是否在照片上添加时间戳
+CAPTURE_TIMESTAMP_COLOR = [0, 0, 255]      # 时间戳颜色（BGR格式，默认红色）
+CAPTURE_TIMESTAMP_SCALE = 1.0              # 时间戳文字大小缩放
+CAPTURE_TIMESTAMP_THICKNESS = 2            # 时间戳文字粗细
 

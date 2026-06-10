@@ -6,13 +6,14 @@ import os
 import socket
 import logging
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request, send_file
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory
 import threading
 
 from database import Database
 from analyzer import DataAnalyzer
 from monitor_service import ActivityMonitor
-from config import WEB_HOST, WEB_PORT, DEBUG_MODE, STATIC_DIR, TEMPLATES_DIR, DATA_DIR
+from config import WEB_HOST, WEB_PORT, DEBUG_MODE, STATIC_DIR, TEMPLATES_DIR, DATA_DIR, \
+    CAPTURE_TEMP_DIR, CAPTURE_PERMANENT_DIR, CAPTURE_GIF_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +319,58 @@ def export_excel():
             'success': False,
             'message': str(e)
         })
+
+
+# ===== 摄像头抓拍 API =====
+
+@app.route('/api/camera/status')
+def get_camera_status():
+    """获取摄像头抓拍服务状态"""
+    if monitor and hasattr(monitor, 'camera_service'):
+        return jsonify({
+            'success': True,
+            'data': monitor.camera_service.get_status()
+        })
+    return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+
+
+@app.route('/api/camera/captures')
+def get_captures():
+    """获取抓拍图片列表"""
+    capture_type = request.args.get('type', 'temp')  # temp | permanent
+    limit = request.args.get('limit', 20, type=int)
+
+    if not monitor or not hasattr(monitor, 'camera_service'):
+        return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+
+    files = monitor.camera_service.get_recent_captures(capture_type, limit)
+    return jsonify({'success': True, 'data': files})
+
+
+@app.route('/api/camera/gifs')
+def get_gifs():
+    """获取 GIF 动图列表"""
+    limit = request.args.get('limit', 20, type=int)
+
+    if not monitor or not hasattr(monitor, 'camera_service'):
+        return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+
+    files = monitor.camera_service.get_recent_gifs(limit)
+    return jsonify({'success': True, 'data': files})
+
+
+@app.route('/captures/<path:filename>')
+def serve_capture(filename):
+    """提供抓拍图片/GIF文件服务"""
+    # 防止路径遍历：只允许文件名，不允许包含目录分隔符
+    safe_name = os.path.basename(filename)
+    if safe_name != filename:
+        return jsonify({'success': False, 'message': '非法文件名'}), 400
+    for directory in [CAPTURE_PERMANENT_DIR, CAPTURE_TEMP_DIR, CAPTURE_GIF_DIR]:
+        filepath = os.path.join(directory, safe_name)
+        if os.path.exists(filepath):
+            return send_from_directory(directory, safe_name)
+    return jsonify({'success': False, 'message': '文件不存在'}), 404
 
 
 def start_web_server(monitor_instance):
