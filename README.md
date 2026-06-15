@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
-  <img src="https://img.shields.io/badge/Version-1.3.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-1.3.1-blue?style=flat-square" alt="Version">
 </p>
 
 <h1 align="center">📊 DailyRoutine Monitoring</h1>
@@ -58,6 +58,7 @@
 ### 📷 摄像头抓拍（v1.3.0 新增）
 - 🎥 **时间段抓拍**：配置多个每日时间段，按指定间隔（如每 60 秒）自动拍照
 - 📌 **固定时间抓拍**：在每天特定时间点（如 08:50、14:50、19:50）永久拍照
+- 📸 **手动立即抓拍**：Web 界面一键拍照，可即时验证摄像头设备并按需抓拍
 - 🎞️ **GIF 动图**：每个时间段结束时自动将临时照片合成为 GIF 动图
 - 🏷️ **时间戳水印**：每张照片自动叠加拍摄时间
 - 🧹 **自动清理**：过期临时照片自动删除，GIF 和永久照片长期保存
@@ -100,7 +101,9 @@
 - Excel 包含"每日统计"和"汇总统计"两个工作表
 
 ### 摄像头抓拍
-- 服务状态卡片：抓拍运行状态、摄像头连接状态、活跃线程数
+- 服务状态卡片：抓拍服务状态、摄像头设备状态（待机/正在拍摄/未启用）、活跃线程数
+- 摄像头说明提示：解释按需启用机制，避免误判设备故障
+- 立即抓拍按钮：一键拍照即时验证设备
 - 图片网格：浏览临时抓拍、永久抓拍和 GIF 动图
 - 点击图片可查看大图
 
@@ -371,6 +374,20 @@ Pillow         # GIF 动图生成
 1. 运行 `python setup_autostart.py` → 选择 `2` 移除自启动
 2. 关闭正在运行的程序（Ctrl+C 或任务管理器结束进程）
 3. 删除项目文件夹
+</details>
+
+<details>
+<summary><strong>摄像头显示"待机（按需启用）"是不是设备故障？</strong></summary>
+
+不是故障。摄像头为**按需启用**设计：仅在配置的抓拍时间段或固定时间点自动打开，其余时间释放以供其他程序（会议、直播等）使用。因此"待机"是正常的空闲状态。
+
+要验证摄像头是否可用，点击 Web 界面摄像头抓拍页的 **"📸 立即抓拍"** 按钮即可即时拍照。若按钮报错"摄像头无法打开"，可能是设备被其他程序（如正在进行的视频会议）占用，关闭占用程序后重试。
+</details>
+
+<details>
+<summary><strong>为什么时间段抓拍后看不到新照片？</strong></summary>
+
+若项目路径中包含中文等非 ASCII 字符，早期版本因 OpenCV 文件 I/O 限制会导致抓拍静默失败。v1.3.1 已修复此问题（改用 `imencode`/`imdecode` + numpy 文件读写绕过）。若仍异常，请查看 `logs/monitor.log` 中的摄像头相关日志，或用"立即抓拍"按钮定位问题。
 </details>
 
 ---
