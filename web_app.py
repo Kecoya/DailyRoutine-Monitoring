@@ -359,6 +359,21 @@ def get_gifs():
     return jsonify({'success': True, 'data': files})
 
 
+@app.route('/api/camera/capture_now', methods=['POST'])
+def capture_now():
+    """手动立即抓拍一张照片（按需打开/释放摄像头）"""
+    if not monitor or not getattr(monitor, 'camera_service', None):
+        return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+
+    is_permanent = request.args.get('permanent', 'false').lower() == 'true'
+    try:
+        result = monitor.camera_service.capture_now(is_permanent=is_permanent)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"立即抓拍失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)})
+
+
 @app.route('/captures/<path:filename>')
 def serve_capture(filename):
     """提供抓拍图片/GIF文件服务"""

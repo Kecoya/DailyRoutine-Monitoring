@@ -658,7 +658,15 @@
                     <div class="loading-text">加载中...</div>
                 </div>
             </div>
+            <div class="exclusion-info" style="margin-bottom: 16px;">
+                <h4>ℹ️ 摄像头说明</h4>
+                <p style="color: #92400e; font-size: 0.9em; line-height: 1.8;">
+                    摄像头为<strong>按需启用</strong>：仅在配置的抓拍时间段或固定时间点自动打开，其余时间释放以供其他程序（会议、直播等）使用。<br>
+                    "摄像头设备"显示为<strong>待机</strong>属正常状态，不代表设备故障。可点击下方"📸 立即抓拍"立即验证设备并拍照。
+                </p>
+            </div>
             <div style="margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <button class="btn" id="btnCaptureNow" onclick="captureNow(false)">📸 立即抓拍</button>
                 <button class="btn" onclick="loadCaptureImages('temp')">🕐 临时抓拍</button>
                 <button class="btn btn-secondary" onclick="loadCaptureImages('permanent')">📌 永久抓拍</button>
                 <button class="btn" style="background: var(--warning);" onclick="loadGifs()">🎬 GIF 动图</button>
@@ -1139,14 +1147,28 @@
                     const d = result.data;
                     const statusColor = d.running ? 'var(--success)' : 'var(--danger)';
                     const statusText = d.running ? '运行中' : '已停止';
+
+                    // 摄像头设备状态：区分"正在拍摄"、"待机(按需启用)"、"未启用"
+                    let camLabel, camColor;
+                    if (!d.running) {
+                        camLabel = '未启用';
+                        camColor = 'var(--text-secondary)';
+                    } else if (d.camera_ready) {
+                        camLabel = '正在拍摄';
+                        camColor = 'var(--success)';
+                    } else {
+                        camLabel = '待机（按需启用）';
+                        camColor = 'var(--success)';
+                    }
+
                     el.innerHTML = `
                         <div class="stat-card">
-                            <div class="label">摄像头抓拍</div>
+                            <div class="label">抓拍服务</div>
                             <div class="value" style="font-size:1.4em; color:${statusColor}">${statusText}</div>
                         </div>
                         <div class="stat-card">
-                            <div class="label">摄像头状态</div>
-                            <div class="value" style="font-size:1.4em">${d.camera_ready ? '已连接' : '未连接'}</div>
+                            <div class="label">摄像头设备</div>
+                            <div class="value" style="font-size:1.4em; color:${camColor}">${camLabel}</div>
                         </div>
                         <div class="stat-card">
                             <div class="label">活跃抓拍线程</div>
@@ -1158,6 +1180,32 @@
                 }
             } catch (e) {
                 el.innerHTML = errorHTML('摄像头服务连接失败');
+            }
+        }
+
+        // 立即抓拍一张（按需打开摄像头，验证设备是否可用）
+        async function captureNow(permanent = false) {
+            const btn = document.getElementById('btnCaptureNow');
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '📸 抓拍中...';
+            try {
+                const url = `/api/camera/capture_now${permanent ? '?permanent=true' : ''}`;
+                const resp = await fetch(url, { method: 'POST' });
+                const result = await resp.json();
+                if (result.success) {
+                    showToast(`抓拍成功：${result.filename}`, 'success');
+                    // 刷新到对应列表顶部
+                    loadCaptureImages(permanent ? 'permanent' : 'temp');
+                    loadCameraStatus();
+                } else {
+                    showToast('抓拍失败：' + (result.message || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('抓拍请求失败', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalText;
             }
         }
 

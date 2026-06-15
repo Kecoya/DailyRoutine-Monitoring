@@ -10,6 +10,7 @@ import time
 import logging
 import threading
 import schedule
+import numpy as np
 from datetime import datetime, time as dt_time, timedelta
 
 import cv2
@@ -164,10 +165,13 @@ class CameraService:
         filepath = os.path.join(save_dir, filename)
 
         try:
-            success = cv2.imwrite(filepath, frame_with_timestamp)
+            # 注意：cv2.imwrite 在 Windows 上对含非 ASCII 字符的路径（如中文）会静默失败。
+            # 改用 imencode + numpy.tofile 绕过 OpenCV 的文件 I/O。
+            success, buffer = cv2.imencode('.jpg', frame_with_timestamp)
             if not success:
-                logger.error(f"保存图片失败：cv2.imwrite 返回 False（路径：{filepath}）")
+                logger.error(f"保存图片失败：cv2.imencode 失败（路径：{filepath}）")
                 return None
+            buffer.tofile(filepath)
             save_type = "永久" if is_permanent else "临时"
             logger.info(f"{save_type}图片已保存：{filepath}")
             return filepath
@@ -223,7 +227,10 @@ class CameraService:
             images = []
             for filepath in filtered_files:
                 try:
-                    cv_img = cv2.imread(filepath)
+                    # 注意：cv2.imread 在 Windows 上对含非 ASCII 字符的路径会返回 None。
+                    # 改用 np.fromfile + cv2.imdecode 绕过 OpenCV 的文件 I/O。
+                    data = np.fromfile(filepath, dtype=np.uint8)
+                    cv_img = cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
                     if cv_img is not None:
                         rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
                         pil_img = Image.fromarray(rgb_img)
@@ -385,6 +392,40 @@ class CameraService:
                 logger.info("固定时间拍照完成，摄像头已释放")
         else:
             logger.error(f"摄像头初始化失败，跳过固定时间拍照：{time_info['time']}")
+
+    def capture_now(self, is_permanent=False):
+        """
+        手动立即抓拍一张（供 Web "立即抓拍" 按钮调用）。
+        按需打开摄像头、拍照、立即释放。
+
+        Returns:
+            dict: 成功时含 filename/url/timestamp；失败时含 success=False 和 message
+        """
+        if not self.initialize_camera():
+            logger.error("立即抓拍失败：摄像头无法打开")
+            return {'success': False, 'message': '摄像头无法打开（可能被其他程序占用或设备不存在）'}
+
+        try:
+            timestamp = datetime.now()
+            frame = self.capture_image()
+            if frame is None:
+                return {'success': False, 'message': '无法读取摄像头画面'}
+
+            filepath = self.save_image(frame, timestamp=timestamp, is_permanent=is_permanent)
+            if not filepath:
+                return {'success': False, 'message': '保存图片失败'}
+
+            filename = os.path.basename(filepath)
+            logger.info(f"手动立即抓拍成功：{filepath}")
+            return {
+                'success': True,
+                'filename': filename,
+                'url': f'/captures/{filename}',
+                'timestamp': timestamp.isoformat(),
+                'capture_type': 'permanent' if is_permanent else 'temp',
+            }
+        finally:
+            self.release_camera()
 
     def _setup_schedule(self):
         """设置固定时间拍照计划"""
