@@ -14,16 +14,15 @@ import numpy as np
 from datetime import datetime, time as dt_time, timedelta
 
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from config import (
     CAPTURE_ENABLED, CAPTURE_CAMERA_ID,
     CAPTURE_TEMP_DIR, CAPTURE_PERMANENT_DIR, CAPTURE_GIF_DIR,
     CAPTURE_TIME_RANGES, CAPTURE_FIXED_TIMES,
     CAPTURE_MAX_TEMP_FILES, CAPTURE_AUTO_CLEANUP, CAPTURE_CLEANUP_DAYS,
-    CAPTURE_GIF_FPS,
-    CAPTURE_TIMESTAMP_ENABLED, CAPTURE_TIMESTAMP_COLOR,
-    CAPTURE_TIMESTAMP_SCALE, CAPTURE_TIMESTAMP_THICKNESS,
+    CAPTURE_GIF_FPS, CAPTURE_WARMUP_FRAMES,
+    CAPTURE_TIMESTAMP_ENABLED, CAPTURE_TIMESTAMP_SCALE,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +39,8 @@ class CameraService:
         self.schedule_thread = None
         self._cleanup_done_this_hour = False
         self._main_thread = None
+        # 手动抓拍进行中标志：防止主循环在手动抓拍期间误释放摄像头
+        self._manual_capturing = False
 
     # ================================================================
     #  摄像头生命周期（线程安全）
@@ -82,12 +83,21 @@ class CameraService:
                 finally:
                     self.camera = None
 
-    def capture_image(self):
-        """抓拍一张图片（线程安全）"""
+    def capture_image(self, warmup_frames=0):
+        """
+        抓拍一张图片（线程安全）。
+
+        Args:
+            warmup_frames: 预热帧数。摄像头刚打开时自动曝光/白平衡/补光灯尚未稳定，
+                           首帧往往过暗。读取并丢弃若干帧后再正式抓拍可解决此问题。
+        """
         with self.camera_lock:
             if not self.camera or not self.camera.isOpened():
                 logger.error("摄像头未初始化，无法抓拍")
                 return None
+
+            for _ in range(warmup_frames):
+                self.camera.read()
 
             ret, frame = self.camera.read()
             if not ret:
@@ -100,52 +110,55 @@ class CameraService:
     #  图片处理
     # ================================================================
 
+    def _get_font(self, size):
+        """加载 TrueType 字体，按优先级尝试常见字体，失败则回退默认字体"""
+        for name in ('arial.ttf', 'ARIAL.TTF', 'msyh.ttc', 'simhei.ttf',
+                     'DejaVuSans.ttf'):
+            try:
+                return ImageFont.truetype(name, size)
+            except (IOError, OSError):
+                continue
+        return ImageFont.load_default()
+
     def add_timestamp(self, frame, timestamp=None):
-        """在图片上添加时间戳水印"""
+        """
+        在照片顶部拼接一层白带显示拍摄时间，不在照片本体上做任何标注。
+        白带在上、照片在下，整体高度 = 白带高度 + 原图高度。
+        """
         if not CAPTURE_TIMESTAMP_ENABLED:
             return frame
 
         if timestamp is None:
             timestamp = datetime.now()
 
-        frame_with_timestamp = frame.copy()
+        # OpenCV 帧 (BGR) -> PIL 图像 (RGB)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        photo = Image.fromarray(rgb)
+        w, h = photo.size
 
-        timestamp_color = tuple(CAPTURE_TIMESTAMP_COLOR)
-        timestamp_scale = CAPTURE_TIMESTAMP_SCALE
-        timestamp_thickness = CAPTURE_TIMESTAMP_THICKNESS
+        # 字号按图像宽度自适应，CAPTURE_TIMESTAMP_SCALE 可微调
+        font_size = max(14, int(w * 0.035 * CAPTURE_TIMESTAMP_SCALE))
+        font = self._get_font(font_size)
 
-        timestamp_text = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        text = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        bbox = font.getbbox(text)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        band_height = max(text_h + 16, int(h * 0.05))
 
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        (text_width, text_height), baseline = cv2.getTextSize(
-            timestamp_text, font, timestamp_scale, timestamp_thickness
-        )
+        # 白带 + 黑色文字（左对齐、垂直居中）
+        band = Image.new('RGB', (w, band_height), color='white')
+        draw = ImageDraw.Draw(band)
+        text_y = (band_height - text_h) // 2 - bbox[1]
+        draw.text((12, text_y), text, fill='black', font=font)
 
-        margin = 10
-        x = frame.shape[1] - text_width - margin
-        y = text_height + margin
+        # 拼接：白带在上，照片在下
+        combined = Image.new('RGB', (w, h + band_height), color='white')
+        combined.paste(band, (0, 0))
+        combined.paste(photo, (0, band_height))
 
-        padding = 5
-        cv2.rectangle(
-            frame_with_timestamp,
-            (x - padding, y - text_height - padding),
-            (x + text_width + padding, y + baseline + padding),
-            (0, 0, 0),
-            -1
-        )
-
-        cv2.putText(
-            frame_with_timestamp,
-            timestamp_text,
-            (x, y),
-            font,
-            timestamp_scale,
-            timestamp_color,
-            timestamp_thickness,
-            cv2.LINE_AA
-        )
-
-        return frame_with_timestamp
+        # 转回 BGR 以便后续 cv2.imencode 保存
+        return cv2.cvtColor(np.array(combined), cv2.COLOR_RGB2BGR)
 
     def save_image(self, frame, timestamp=None, is_permanent=False):
         """
@@ -346,6 +359,9 @@ class CameraService:
                          f"{time_range['start']}-{time_range['end']}")
             return
 
+        # 预热：读取并丢弃若干帧，让自动曝光/白平衡/补光灯稳定（不保存预热帧）
+        self.capture_image(warmup_frames=CAPTURE_WARMUP_FRAMES)
+
         try:
             while self.is_running:
                 in_range, current_range = self.is_within_time_ranges()
@@ -384,7 +400,7 @@ class CameraService:
 
         if self.initialize_camera():
             try:
-                frame = self.capture_image()
+                frame = self.capture_image(warmup_frames=CAPTURE_WARMUP_FRAMES)
                 if frame is not None:
                     self.save_image(frame, is_permanent=True)
             finally:
@@ -396,18 +412,25 @@ class CameraService:
     def capture_now(self, is_permanent=False):
         """
         手动立即抓拍一张（供 Web "立即抓拍" 按钮调用）。
-        按需打开摄像头、拍照、立即释放。
+        按需打开摄像头、预热、拍照。
+
+        注意：若当前有时间段抓拍工作线程正在运行（摄像头正被其占用），
+        本方法只借用摄像头拍照，结束时**不会释放**，以免打断既定抓拍计划。
 
         Returns:
             dict: 成功时含 filename/url/timestamp；失败时含 success=False 和 message
         """
+        # 是否有正在运行的时间段抓拍工作线程（它们持有摄像头）
+        worker_active = any(t.is_alive() for t in self.capture_threads)
+
         if not self.initialize_camera():
             logger.error("立即抓拍失败：摄像头无法打开")
             return {'success': False, 'message': '摄像头无法打开（可能被其他程序占用或设备不存在）'}
 
+        self._manual_capturing = True
         try:
             timestamp = datetime.now()
-            frame = self.capture_image()
+            frame = self.capture_image(warmup_frames=CAPTURE_WARMUP_FRAMES)
             if frame is None:
                 return {'success': False, 'message': '无法读取摄像头画面'}
 
@@ -425,7 +448,10 @@ class CameraService:
                 'capture_type': 'permanent' if is_permanent else 'temp',
             }
         finally:
-            self.release_camera()
+            self._manual_capturing = False
+            # 仅当没有正在运行的工作线程时才释放摄像头，避免打断既定抓拍计划
+            if not worker_active:
+                self.release_camera()
 
     def _setup_schedule(self):
         """设置固定时间拍照计划"""
@@ -471,7 +497,8 @@ class CameraService:
                         self.capture_threads.append(thread)
                 else:
                     any_capture_alive = any(t.is_alive() for t in self.capture_threads)
-                    if self.camera and not any_capture_alive:
+                    # 手动抓拍进行中时不释放，避免打断
+                    if self.camera and not any_capture_alive and not self._manual_capturing:
                         logger.info("当前不在抓拍时间段，释放摄像头资源")
                         self.release_camera()
 

@@ -97,9 +97,13 @@ CAPTURE_CLEANUP_DAYS = 7           # 临时文件保留天数
 # GIF 动图配置
 CAPTURE_GIF_FPS = 24               # GIF 帧率
 
-# 时间戳水印配置
-CAPTURE_TIMESTAMP_ENABLED = True           # 是否在照片上添加时间戳
-CAPTURE_TIMESTAMP_COLOR = [0, 0, 255]      # 时间戳颜色（BGR格式，默认红色）
-CAPTURE_TIMESTAMP_SCALE = 1.0              # 时间戳文字大小缩放
-CAPTURE_TIMESTAMP_THICKNESS = 2            # 时间戳文字粗细
+# 摄像头预热帧数
+# 摄像头刚打开时自动曝光/白平衡/补光灯尚未稳定，首帧往往过暗。
+# 抓拍前读取并丢弃若干帧可解决。每帧约 33ms，25 帧 ≈ 0.8 秒。
+CAPTURE_WARMUP_FRAMES = 25
+
+# 时间信息标注配置
+# 在照片顶部拼接一层白带显示拍摄时间（不在照片本体上做任何标注）
+CAPTURE_TIMESTAMP_ENABLED = True           # 是否拼接时间信息白带
+CAPTURE_TIMESTAMP_SCALE = 1.0              # 白带文字字号缩放（相对自适应基准）
 
