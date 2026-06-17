@@ -39,40 +39,77 @@ class CameraService:
         self.schedule_thread = None
         self._cleanup_done_this_hour = False
         self._main_thread = None
-        # 手动抓拍进行中标志：防止主循环在手动抓拍期间误释放摄像头
-        self._manual_capturing = False
+        # 抓拍进行中标志（仅在 _capture_one 执行期间为 True，供 get_status 反映状态）
+        self._capture_in_progress = False
 
     # ================================================================
-    #  摄像头生命周期（线程安全）
+    #  摄像头抓拍（每次独立开关，全程持锁）
     # ================================================================
 
-    def initialize_camera(self):
-        """初始化摄像头（线程安全）"""
+    def _capture_one(self, is_permanent, timestamp=None):
+        """
+        原子地完成一次抓拍：打开 → 预热 → 拍照 → 保存 → 释放。
+
+        全程持有 camera_lock，保证与其他抓拍（时间段/固定时间/手动）互斥，
+        互不打断。关键设计：每次抓拍都重新打开并立即释放摄像头，使摄像头
+        活动指示灯只在抓拍瞬间（约 1-2 秒）点亮，而非整个时间段持续长亮。
+
+        Returns:
+            (filepath, timestamp): 成功；失败返回 (None, None)
+        """
+        if timestamp is None:
+            timestamp = datetime.now()
+
+        frame = self._grab_frame()
+        if frame is None:
+            return None, None
+
+        filepath = self.save_image(frame, timestamp=timestamp, is_permanent=is_permanent)
+        return filepath, timestamp
+
+    def _grab_frame(self):
+        """打开 → 预热 → 读取一帧 → 释放，全程持锁。失败返回 None。"""
         with self.camera_lock:
-            if self.camera and self.camera.isOpened():
-                return True
-
             try:
-                self.camera = cv2.VideoCapture(CAPTURE_CAMERA_ID)
-                if not self.camera.isOpened():
+                cap = cv2.VideoCapture(CAPTURE_CAMERA_ID)
+                if not cap.isOpened():
                     logger.error(f"无法打开摄像头 {CAPTURE_CAMERA_ID}")
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    return None
+
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                self.camera = cap
+                self._capture_in_progress = True
+
+                try:
+                    # 预热：丢弃若干帧让自动曝光/白平衡稳定，避免首帧过暗
+                    for _ in range(CAPTURE_WARMUP_FRAMES):
+                        cap.read()
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        logger.error("无法读取摄像头画面")
+                        return None
+                    return frame
+                finally:
+                    self._capture_in_progress = False
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
                     self.camera = None
-                    return False
-
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                self.camera.set(cv2.CAP_PROP_FPS, 30)
-
-                logger.info(f"摄像头 {CAPTURE_CAMERA_ID} 初始化成功")
-                return True
-
             except Exception as e:
-                logger.error(f"摄像头初始化失败：{e}")
+                logger.error(f"摄像头抓取失败：{e}")
+                self._capture_in_progress = False
                 self.camera = None
-                return False
+                return None
 
     def release_camera(self):
-        """释放摄像头资源（线程安全）"""
+        """释放摄像头资源（线程安全）。stop() 时兜底调用。"""
         with self.camera_lock:
             if self.camera:
                 try:
@@ -82,29 +119,6 @@ class CameraService:
                     logger.error(f"释放摄像头时出错：{e}")
                 finally:
                     self.camera = None
-
-    def capture_image(self, warmup_frames=0):
-        """
-        抓拍一张图片（线程安全）。
-
-        Args:
-            warmup_frames: 预热帧数。摄像头刚打开时自动曝光/白平衡/补光灯尚未稳定，
-                           首帧往往过暗。读取并丢弃若干帧后再正式抓拍可解决此问题。
-        """
-        with self.camera_lock:
-            if not self.camera or not self.camera.isOpened():
-                logger.error("摄像头未初始化，无法抓拍")
-                return None
-
-            for _ in range(warmup_frames):
-                self.camera.read()
-
-            ret, frame = self.camera.read()
-            if not ret:
-                logger.error("无法读取摄像头画面")
-                return None
-
-            return frame
 
     # ================================================================
     #  图片处理
@@ -346,21 +360,17 @@ class CameraService:
     # ================================================================
 
     def temporary_capture_worker(self, time_range):
-        """临时抓拍工作线程（时间段内按间隔抓拍）"""
+        """
+        时间段抓拍工作线程：每 interval 秒抓拍一张。
+        每次抓拍独立打开→预热→拍照→释放摄像头，使指示灯只在抓拍瞬间点亮
+        （约 1-2 秒），而非整个时间段持续长亮。
+        """
         interval = time_range["interval"]
         capture_count = 0
         session_start = datetime.now()
 
         logger.info(f"开始时间段抓拍：{time_range['start']}-{time_range['end']}，"
-                     f"间隔{interval}秒")
-
-        if not self.initialize_camera():
-            logger.error(f"摄像头初始化失败，跳过时间段 "
-                         f"{time_range['start']}-{time_range['end']}")
-            return
-
-        # 预热：读取并丢弃若干帧，让自动曝光/白平衡/补光灯稳定（不保存预热帧）
-        self.capture_image(warmup_frames=CAPTURE_WARMUP_FRAMES)
+                     f"间隔{interval}秒（每次抓拍独立开关摄像头）")
 
         try:
             while self.is_running:
@@ -373,16 +383,13 @@ class CameraService:
                     logger.info(f"已达到最大临时抓拍数量 {CAPTURE_MAX_TEMP_FILES}")
                     break
 
-                frame = self.capture_image()
-                if frame is not None:
-                    self.save_image(frame, is_permanent=False)
+                filepath, _ = self._capture_one(is_permanent=False)
+                if filepath:
                     capture_count += 1
 
                 time.sleep(interval)
 
         finally:
-            self.release_camera()
-
             if capture_count >= 2:
                 logger.info(f"开始为时间段 {time_range['start']}-{time_range['end']} 生成GIF...")
                 gif_path = self.create_gif_from_images(time_range, session_start)
@@ -397,61 +404,34 @@ class CameraService:
     def fixed_time_capture(self, time_info):
         """固定时间点拍照（永久保存）"""
         logger.info(f"执行固定时间拍照：{time_info['time']} - {time_info['description']}")
-
-        if self.initialize_camera():
-            try:
-                frame = self.capture_image(warmup_frames=CAPTURE_WARMUP_FRAMES)
-                if frame is not None:
-                    self.save_image(frame, is_permanent=True)
-            finally:
-                self.release_camera()
-                logger.info("固定时间拍照完成，摄像头已释放")
+        filepath, _ = self._capture_one(is_permanent=True)
+        if filepath:
+            logger.info("固定时间拍照完成")
         else:
-            logger.error(f"摄像头初始化失败，跳过固定时间拍照：{time_info['time']}")
+            logger.error(f"固定时间拍照失败：{time_info['time']}")
 
     def capture_now(self, is_permanent=False):
         """
         手动立即抓拍一张（供 Web "立即抓拍" 按钮调用）。
-        按需打开摄像头、预热、拍照。
-
-        注意：若当前有时间段抓拍工作线程正在运行（摄像头正被其占用），
-        本方法只借用摄像头拍照，结束时**不会释放**，以免打断既定抓拍计划。
+        独立打开→预热→拍照→释放，与时间段/固定时间抓拍通过 camera_lock 互斥，互不打断。
 
         Returns:
             dict: 成功时含 filename/url/timestamp；失败时含 success=False 和 message
         """
-        # 是否有正在运行的时间段抓拍工作线程（它们持有摄像头）
-        worker_active = any(t.is_alive() for t in self.capture_threads)
+        timestamp = datetime.now()
+        filepath, ts = self._capture_one(is_permanent=is_permanent, timestamp=timestamp)
+        if not filepath:
+            return {'success': False, 'message': '抓拍失败（摄像头可能被占用或设备不存在）'}
 
-        if not self.initialize_camera():
-            logger.error("立即抓拍失败：摄像头无法打开")
-            return {'success': False, 'message': '摄像头无法打开（可能被其他程序占用或设备不存在）'}
-
-        self._manual_capturing = True
-        try:
-            timestamp = datetime.now()
-            frame = self.capture_image(warmup_frames=CAPTURE_WARMUP_FRAMES)
-            if frame is None:
-                return {'success': False, 'message': '无法读取摄像头画面'}
-
-            filepath = self.save_image(frame, timestamp=timestamp, is_permanent=is_permanent)
-            if not filepath:
-                return {'success': False, 'message': '保存图片失败'}
-
-            filename = os.path.basename(filepath)
-            logger.info(f"手动立即抓拍成功：{filepath}")
-            return {
-                'success': True,
-                'filename': filename,
-                'url': f'/captures/{filename}',
-                'timestamp': timestamp.isoformat(),
-                'capture_type': 'permanent' if is_permanent else 'temp',
-            }
-        finally:
-            self._manual_capturing = False
-            # 仅当没有正在运行的工作线程时才释放摄像头，避免打断既定抓拍计划
-            if not worker_active:
-                self.release_camera()
+        filename = os.path.basename(filepath)
+        logger.info(f"手动立即抓拍成功：{filepath}")
+        return {
+            'success': True,
+            'filename': filename,
+            'url': f'/captures/{filename}',
+            'timestamp': ts.isoformat(),
+            'capture_type': 'permanent' if is_permanent else 'temp',
+        }
 
     def _setup_schedule(self):
         """设置固定时间拍照计划"""
@@ -470,8 +450,12 @@ class CameraService:
             time.sleep(1)
 
     def _main_loop(self):
-        """主循环：监控时间段状态，按需启停抓拍线程"""
-        logger.info("摄像头抓拍主循环已启动（智能摄像头管理：按需初始化/释放）")
+        """
+        主循环：监控时间段状态，按需启动抓拍线程。
+        注：摄像头现由 _capture_one 每次独立开关，本循环不再负责摄像头的
+        打开/释放（既避免了长时间长亮指示灯，也消除了相关的竞态）。
+        """
+        logger.info("摄像头抓拍主循环已启动")
 
         try:
             while self.is_running:
@@ -486,7 +470,7 @@ class CameraService:
 
                     if not thread_already_running:
                         logger.info(f"进入抓拍时间段 {time_range['start']}-{time_range['end']}，"
-                                    f"准备启动摄像头")
+                                    f"启动抓拍线程")
                         thread = threading.Thread(
                             target=self.temporary_capture_worker,
                             args=(time_range,),
@@ -495,12 +479,6 @@ class CameraService:
                         thread.time_range_start = time_range["start"]
                         thread.start()
                         self.capture_threads.append(thread)
-                else:
-                    any_capture_alive = any(t.is_alive() for t in self.capture_threads)
-                    # 手动抓拍进行中时不释放，避免打断
-                    if self.camera and not any_capture_alive and not self._manual_capturing:
-                        logger.info("当前不在抓拍时间段，释放摄像头资源")
-                        self.release_camera()
 
                 # 清理已结束的线程
                 self.capture_threads = [t for t in self.capture_threads if t.is_alive()]
@@ -580,15 +558,12 @@ class CameraService:
     # ================================================================
 
     def get_status(self) -> dict:
-        """获取当前抓拍服务状态"""
-        # 快照读取 camera 引用，避免 is not None 与 .isOpened() 之间的竞态
-        cam = self.camera
-        camera_ready = cam is not None and cam.isOpened()
+        """获取当前抓拍服务状态。camera_ready 仅在抓拍瞬间（持锁期间）为 True。"""
         return {
             'enabled': CAPTURE_ENABLED,
             'running': self.is_running,
             'active_threads': sum(1 for t in self.capture_threads if t.is_alive()),
-            'camera_ready': camera_ready,
+            'camera_ready': self._capture_in_progress,
         }
 
     def get_recent_captures(self, capture_type='temp', limit=20):
