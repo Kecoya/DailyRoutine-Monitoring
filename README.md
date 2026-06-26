@@ -2,14 +2,14 @@
   <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
-  <img src="https://img.shields.io/badge/Version-1.3.1-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-1.4.0-blue?style=flat-square" alt="Version">
 </p>
 
 <h1 align="center">📊 DailyRoutine Monitoring</h1>
 
 <p align="center">
   <strong>研究生 / 科研工作者桌面作息追踪与工作量分析系统</strong><br>
-  实时监控 · 数据分析 · 作息追踪 · 摄像头抓拍 · 隐私安全
+  实时监控 · 数据分析 · 作息追踪 · 摄像头抓拍 · 声音监听 · 隐私安全
 </p>
 
 ---
@@ -65,6 +65,13 @@
 - 🖥️ **Web 查看**：在 Web 界面中浏览临时抓拍、永久抓拍和 GIF 动图
 - 🔒 **隐私安全**：摄像头按需初始化、空闲自动释放，照片仅存本地
 
+### 🎙️ 声音监听（v1.4.0 新增）
+- 🎚️ **手动可控**：Web 界面一键开始/停止监听（非 24h 常驻，按需启用）
+- 🔊 **实时监听**：麦克风音频实时推流到浏览器，可即时听到现场声音
+- 📝 **实时转写**：本地 Vosk 中文模型流式识别，边说边显示部分结果，说完提交完整句
+- 💾 **双格式保存**：每段语音保存为 WAV 文件，文本汇总到 `transcript.txt`
+- 🔒 **完全本地**：识别在本地完成，音频/文本均不上传；录音按会话归档
+
 ### 隐私与安全
 - 🔒 所有数据存储于本地 `data/activity.db`（SQLite）
 - 🔒 不记录键盘输入内容，仅统计按键次数
@@ -106,6 +113,11 @@
 - 立即抓拍按钮：一键拍照即时验证设备
 - 图片网格：浏览临时抓拍、永久抓拍和 GIF 动图
 - 点击图片可查看大图
+
+### 声音监听
+- 状态卡片：监听状态、识别模型加载情况、当前会话
+- 开始/停止监听按钮：实时音频推流到浏览器（可听到现场声音）
+- 实时转写区：边说边显示部分结果（紫色），说完提交完整句（含时间戳、可点播放原音）
 
 </details>
 
@@ -160,6 +172,7 @@ DailyRoutine-Monitoring/
 ├── config.py               # 全局配置文件
 ├── monitor_service.py      # 核心监控服务（双缓冲计数器，pynput 零阻塞回调）
 ├── camera_service.py       # 摄像头抓拍服务（时间段抓拍 + 固定时间抓拍 + GIF 生成）
+├── audio_service.py        # 声音监听服务（Vosk 中文流式识别 + 实时推流 + WAV/文本存档）
 ├── database.py             # 数据库访问层（SQLite WAL 模式）
 ├── analyzer.py             # 数据分析模块（统计 + 图表生成）
 ├── web_app.py              # Flask Web 服务器
@@ -173,7 +186,9 @@ DailyRoutine-Monitoring/
 │   └── index.html          # Web 前端页面
 ├── static/                 # 运行时生成的图表（自动清理）
 ├── data/                   # 数据库文件（.gitignore 排除）
-│   └── captures/           # 摄像头抓拍数据（.gitignore 排除）
+│   ├── captures/           # 摄像头抓拍数据（.gitignore 排除）
+│   ├── audio_sessions/     # 声音监听会话（WAV+文本，.gitignore 排除）
+│   └── asr_models/         # Vosk 中文识别模型（.gitignore 排除）
 └── logs/                   # 日志文件（.gitignore 排除）
 ```
 
@@ -311,6 +326,7 @@ BusyIndex = mouse_score × 0.30 + keyboard_score × 0.30
 | 数据库 | SQLite (WAL 模式) |
 | 系统监控 | psutil, pynput, pywin32 (win32gui) |
 | 摄像头抓拍 | opencv-python, schedule, Pillow |
+| 声音监听 | sounddevice, vosk（本地中文流式 ASR） |
 | 数据分析 | pandas, numpy |
 | 可视化 | matplotlib, seaborn |
 | 数据导出 | openpyxl |
@@ -333,6 +349,8 @@ openpyxl       # Excel 导出
 opencv-python  # 摄像头抓拍
 schedule       # 定时任务调度
 Pillow         # GIF 动图生成
+sounddevice    # 麦克风音频采集
+vosk           # 本地中文语音识别（无 torch 依赖）
 ```
 
 ---
@@ -390,6 +408,20 @@ Pillow         # GIF 动图生成
 若项目路径中包含中文等非 ASCII 字符，早期版本因 OpenCV 文件 I/O 限制会导致抓拍静默失败。v1.3.1 已修复此问题（改用 `imencode`/`imdecode` + numpy 文件读写绕过）。若仍异常，请查看 `logs/monitor.log` 中的摄像头相关日志，或用"立即抓拍"按钮定位问题。
 </details>
 
+<details>
+<summary><strong>声音监听首次点击"开始监听"提示模型未找到？</strong></summary>
+
+声音监听使用本地 Vosk 中文模型，**首次使用需手动下载一次**（默认 `vosk-model-small-cn-0.22`，约 42MB）：
+
+1. 访问 https://alphacephei.com/vosk/models/ 下载 `vosk-model-small-cn-0.22.zip`
+2. 解压到 `data/asr_models/vosk-model-small-cn-0.22/`
+3. 重启程序，再次点击"开始监听"
+
+追求更高识别准确率可改用大模型 `vosk-model-cn-0.22`（约 1.3GB），下载解压后在 `config.py` 把 `AUDIO_MODEL_DIR` 改为 `vosk-model-cn-0.22` 即可。
+
+所有音频识别均在本地完成，录音与文本仅存于 `data/audio_sessions/`，不上传任何服务器。
+</details>
+
 ---
 
 ## 🗺️ 开发路线
@@ -403,6 +435,7 @@ Pillow         # GIF 动图生成
 - [x] 单实例检测（防止多开）
 - [x] 线程安全（双缓冲计数器 + 图表生成锁）
 - [x] 摄像头定时抓拍（时间段抓拍 + 固定时间抓拍 + GIF 生成）
+- [x] 声音监听（实时音频推流 + 本地中文流式转写 + WAV/文本存档）
 - [ ] 应用程序使用时长统计
 - [ ] 系统托盘图标 + 右键菜单
 - [ ] 多显示器支持

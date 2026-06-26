@@ -10,3 +10,5 @@ pywin32
 opencv-python>=4.5.0
 schedule>=1.1.0
 Pillow>=8.0.0
+sounddevice
+vosk

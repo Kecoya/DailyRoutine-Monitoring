@@ -45,6 +45,12 @@ data/*.xls
 # Camera captures (包含个人照片，不上传)
 data/captures/
 
+# Audio sessions (包含个人语音录音，不上传)
+data/audio_sessions/
+
+# ASR models (体积大，按需下载，不上传)
+data/asr_models/
+
 # Log files (包含用户活动记录，不上传)
 logs/*.log
 

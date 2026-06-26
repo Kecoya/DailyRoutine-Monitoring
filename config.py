@@ -24,6 +24,14 @@ os.makedirs(CAPTURE_TEMP_DIR, exist_ok=True)
 os.makedirs(CAPTURE_PERMANENT_DIR, exist_ok=True)
 os.makedirs(CAPTURE_GIF_DIR, exist_ok=True)
 
+# 音频监听目录（每次监听一个会话子目录，含 WAV 段 + transcript.txt）
+AUDIO_SESSIONS_DIR = os.path.join(DATA_DIR, 'audio_sessions')
+os.makedirs(AUDIO_SESSIONS_DIR, exist_ok=True)
+
+# Vosk 本地 ASR 模型目录（放在 data/asr_models/ 下）
+AUDIO_ASR_MODELS_DIR = os.path.join(DATA_DIR, 'asr_models')
+os.makedirs(AUDIO_ASR_MODELS_DIR, exist_ok=True)
+
 # 数据库配置
 DATABASE_PATH = os.path.join(DATA_DIR, 'activity.db')
 
@@ -106,4 +114,18 @@ CAPTURE_WARMUP_FRAMES = 25
 # 在照片顶部拼接一层白带显示拍摄时间（不在照片本体上做任何标注）
 CAPTURE_TIMESTAMP_ENABLED = True           # 是否拼接时间信息白带
 CAPTURE_TIMESTAMP_SCALE = 1.0              # 白带文字字号缩放（相对自适应基准）
+
+# ===== 音频监听配置 =====
+# 用户可控的开始/停止监听；实时音频推流到浏览器 + 实时中文转写
+AUDIO_ENABLED = True                       # 是否启用音频监听功能
+AUDIO_SAMPLE_RATE = 16000                  # 采样率（16kHz 足够语音识别）
+AUDIO_CHANNELS = 1                         # 声道数（单声道即可）
+AUDIO_CHUNK_MS = 100                       # 每个音频块时长（毫秒），用于推流和 VAD
+
+# VAD（语音活动检测）由 Vosk 模型内置处理，以下为录音分段与转写的辅助参数
+AUDIO_MIN_SEGMENT_SEC = 0.3                # 单段最小时长（秒），过短不存盘（仍显示文字）
+
+# ASR（语音识别）参数 —— Vosk 本地模型（无 torch 依赖，Python 3.13 友好）
+AUDIO_MODEL_DIR = 'vosk-model-small-cn-0.22'  # 中文模型目录名；改 'vosk-model-cn-0.22' 可用大模型(更准,1.3GB)
+AUDIO_PARTIAL_RESULTS = True               # 是否推送实时部分识别结果（边说边显示）
 

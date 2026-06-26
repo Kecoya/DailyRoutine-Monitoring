@@ -6,14 +6,15 @@ import os
 import socket
 import logging
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request, send_file, send_from_directory
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response
 import threading
 
 from database import Database
 from analyzer import DataAnalyzer
 from monitor_service import ActivityMonitor
+from audio_service import AudioService
 from config import WEB_HOST, WEB_PORT, DEBUG_MODE, STATIC_DIR, TEMPLATES_DIR, DATA_DIR, \
-    CAPTURE_TEMP_DIR, CAPTURE_PERMANENT_DIR, CAPTURE_GIF_DIR
+    CAPTURE_TEMP_DIR, CAPTURE_PERMANENT_DIR, CAPTURE_GIF_DIR, AUDIO_SESSIONS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ app = Flask(__name__,
 monitor = None
 analyzer = DataAnalyzer()
 db = Database()
+audio_service = AudioService()
 
 
 def is_port_in_use(host: str, port: int) -> bool:
@@ -388,6 +390,73 @@ def serve_capture(filename):
     return jsonify({'success': False, 'message': '文件不存在'}), 404
 
 
+# ===== 音频监听 API =====
+
+@app.route('/api/audio/status')
+def get_audio_status():
+    """获取音频监听服务状态"""
+    return jsonify({'success': True, 'data': audio_service.get_status()})
+
+
+@app.route('/api/audio/start', methods=['POST'])
+def audio_start():
+    """开始监听"""
+    result = audio_service.start_listening()
+    return jsonify(result)
+
+
+@app.route('/api/audio/stop', methods=['POST'])
+def audio_stop():
+    """停止监听"""
+    result = audio_service.stop_listening()
+    return jsonify(result)
+
+
+@app.route('/api/audio/stream')
+def audio_stream():
+    """
+    实时事件流（SSE）：推送音频块（event:audio）、转写文本（event:transcript）、
+    段开始/状态变更等事件。浏览器用 EventSource 订阅。
+    """
+    q = audio_service.subscribe()
+
+    def generate():
+        try:
+            while True:
+                try:
+                    msg = q.get(timeout=15)
+                    yield msg
+                except Exception:
+                    # 队列空超时，发 keepalive 保持连接
+                    yield ': ping\n\n'
+        finally:
+            audio_service.unsubscribe(q)
+
+    headers = {
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive',
+    }
+    return Response(generate(), mimetype='text/event-stream', headers=headers)
+
+
+@app.route('/audio_sessions/<path:filename>')
+def serve_audio_file(filename):
+    """提供音频会话文件服务（WAV / transcript.txt），带路径遍历防护"""
+    safe = os.path.normpath(filename)
+    # 只允许 <session_id>/<file> 形式，禁止再上溯
+    if safe.startswith('..') or os.path.isabs(safe):
+        return jsonify({'success': False, 'message': '非法路径'}), 400
+    full = os.path.join(AUDIO_SESSIONS_DIR, safe)
+    if not os.path.abspath(full).startswith(os.path.abspath(AUDIO_SESSIONS_DIR)):
+        return jsonify({'success': False, 'message': '非法路径'}), 400
+    if os.path.exists(full) and os.path.isfile(full):
+        directory = os.path.dirname(full)
+        base = os.path.basename(full)
+        return send_from_directory(directory, base)
+    return jsonify({'success': False, 'message': '文件不存在'}), 404
+
+
 def start_web_server(monitor_instance):
     """启动Web服务器"""
     global monitor
@@ -400,7 +469,8 @@ def start_web_server(monitor_instance):
         return
 
     logger.info(f"Web服务器启动于 http://{WEB_HOST}:{WEB_PORT}")
-    app.run(host=WEB_HOST, port=WEB_PORT, debug=False, use_reloader=False)
+    # threaded=True 必需：SSE 是长连接，每个连接占用一个线程
+    app.run(host=WEB_HOST, port=WEB_PORT, debug=False, use_reloader=False, threaded=True)
 
 
 def run_in_thread(monitor_instance):

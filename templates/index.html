@@ -552,6 +552,7 @@
             <button class="tab" data-tab="custom">🔍 自定义分析</button>
             <button class="tab" data-tab="export">💾 数据导出</button>
             <button class="tab" data-tab="camera">📷 摄像头抓拍</button>
+            <button class="tab" data-tab="audio">🎙️ 声音监听</button>
         </div>
 
         <!-- Today -->
@@ -674,6 +675,47 @@
             <div id="captureGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;"></div>
         </div>
 
+        <!-- Audio Monitoring -->
+        <div id="audio" class="content">
+            <h2>🎙️ 声音监听</h2>
+            <div id="audioStatus" class="stats-grid">
+                <div class="stat-card">
+                    <div class="label">监听状态</div>
+                    <div class="value" style="font-size:1.4em; color:var(--danger)" id="audioStateText">未监听</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">识别模型</div>
+                    <div class="value" style="font-size:1.4em" id="audioModelText">未加载</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">当前会话</div>
+                    <div class="value" style="font-size:0.9em" id="audioSessionText">—</div>
+                </div>
+            </div>
+
+            <div class="exclusion-info" style="margin-bottom: 16px;">
+                <h4>ℹ️ 使用说明</h4>
+                <p style="color: #92400e; font-size: 0.9em; line-height: 1.8;">
+                    点击「开始监听」后，本机麦克风音频会实时推送到浏览器（可听到现场声音），同时本地 faster-whisper 模型将语音转为中文显示在下方。
+                    每段语音会保存为 WAV 文件，转写文本汇总保存到 <code>transcript.txt</code>。
+                    <strong>本地识别，不上传任何音频。</strong>识别模型首次使用需联网下载（约480MB，仅一次）。
+                </p>
+            </div>
+
+            <div style="margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <button class="btn" id="btnAudioStart" onclick="startListening()">🎙️ 开始监听</button>
+                <button class="btn" id="btnAudioStop" onclick="stopListening()" disabled style="background:var(--danger);">⏹ 停止监听</button>
+                <span id="audioListeningHint" style="color:var(--text-secondary);font-size:0.9em;"></span>
+            </div>
+
+            <div class="chart-container" style="text-align:left;">
+                <h3>📝 实时转写</h3>
+                <div id="transcriptBox" style="max-height:360px; overflow-y:auto; background:var(--bg); border-radius:12px; padding:16px; font-size:0.95em; line-height:1.8;">
+                    <p style="color:var(--text-secondary);">点击「开始监听」后，识别出的中文将实时显示在此...</p>
+                </div>
+            </div>
+        </div>
+
         <footer>
             <p>&copy; <span id="footerYear"></span> 系统监控与作息分析程序 &nbsp;|&nbsp; 数据仅存储于本地，隐私安全</p>
         </footer>
@@ -730,6 +772,7 @@
                 else if (tabName === 'week') loadWeekReport();
                 else if (tabName === 'month') loadMonthReport();
                 else if (tabName === 'camera') { loadCameraStatus(); loadCaptureImages('temp'); }
+                else if (tabName === 'audio') loadAudioStatus();
             });
         });
 
@@ -1254,6 +1297,160 @@
                 }
             } catch (e) {
                 grid.innerHTML = errorHTML('加载失败');
+            }
+        }
+
+        // ===== Audio Monitoring =====
+        let audioCtx = null;        // Web Audio 播放上下文
+        let nextPlayTime = 0;       // 下一块音频的计划播放时刻（无缝拼接）
+        let audioEventSource = null; // SSE 连接
+
+        async function loadAudioStatus() {
+            try {
+                const resp = await fetch('/api/audio/status');
+                const result = await resp.json();
+                if (result.success) updateAudioUI(result.data);
+            } catch (e) { /* ignore */ }
+        }
+
+        function updateAudioUI(d) {
+            const stateText = document.getElementById('audioStateText');
+            const modelText = document.getElementById('audioModelText');
+            const sessionText = document.getElementById('audioSessionText');
+            const btnStart = document.getElementById('btnAudioStart');
+            const btnStop = document.getElementById('btnAudioStop');
+            const hint = document.getElementById('audioListeningHint');
+
+            if (d.listening) {
+                stateText.textContent = '监听中';
+                stateText.style.color = 'var(--success)';
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+                hint.textContent = '🔴 正在实时监听...';
+            } else {
+                stateText.textContent = '未监听';
+                stateText.style.color = 'var(--danger)';
+                btnStart.disabled = false;
+                btnStop.disabled = true;
+                hint.textContent = '';
+            }
+            modelText.textContent = d.model_loaded ? '已加载' : '加载中/未加载';
+            sessionText.textContent = d.session_id || '—';
+        }
+
+        // 解码 base64 int16 PCM → Float32 并无缝播放
+        function playAudioChunk(b64) {
+            if (!audioCtx) return;
+            const bytes = atob(b64);
+            const sampleCount = bytes.length / 2;
+            const i16 = new Int16Array(sampleCount);
+            for (let i = 0; i < sampleCount; i++) {
+                i16[i] = bytes.charCodeAt(i * 2) | (bytes.charCodeAt(i * 2 + 1) << 8);
+            }
+            const f32 = new Float32Array(sampleCount);
+            for (let i = 0; i < sampleCount; i++) f32[i] = i16[i] / 32768;
+
+            const buf = audioCtx.createBuffer(1, sampleCount, 16000);
+            buf.getChannelData(0).set(f32);
+            const src = audioCtx.createBufferSource();
+            src.buffer = buf;
+            src.connect(audioCtx.destination);
+            // 无缝拼接：在上一块结束或当前时刻之后播放
+            const startAt = Math.max(audioCtx.currentTime + 0.02, nextPlayTime);
+            src.start(startAt);
+            nextPlayTime = startAt + buf.duration;
+        }
+
+        function appendTranscript(d) {
+            const box = document.getElementById('transcriptBox');
+            if (box.querySelector('p')) box.innerHTML = '';
+            // 清除实时部分行
+            const live = document.getElementById('audioLivePartial');
+            if (live) live.remove();
+            const line = document.createElement('div');
+            line.style.cssText = 'padding:6px 0; border-bottom:1px solid var(--border);';
+            const audioLink = d.audio_url
+                ? ` <a href="${d.audio_url}" target="_blank" style="font-size:0.8em;color:var(--primary);">🔊播放原音</a>`
+                : '';
+            line.innerHTML = `<span style="color:var(--text-secondary);font-size:0.85em;">[${d.timestamp}]</span> ${d.text}${audioLink}`;
+            box.appendChild(line);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function updatePartial(d) {
+            const box = document.getElementById('transcriptBox');
+            if (box.querySelector('p')) box.innerHTML = '';
+            let live = document.getElementById('audioLivePartial');
+            if (!live) {
+                live = document.createElement('div');
+                live.id = 'audioLivePartial';
+                live.style.cssText = 'padding:6px 0; color:var(--primary); font-style:italic;';
+                box.appendChild(live);
+            }
+            live.innerHTML = `<span style="color:var(--text-secondary);font-size:0.85em;font-style:normal;">[${d.timestamp}]</span> 🎯 ${d.text}...`;
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function clearTranscriptPlaceholder() {
+            const box = document.getElementById('transcriptBox');
+            if (box.querySelector('p')) box.innerHTML = '';
+        }
+
+        async function startListening() {
+            clearTranscriptPlaceholder();
+            // 先建立 SSE 订阅（避免漏掉开头音频）
+            try {
+                audioEventSource = new EventSource('/api/audio/stream');
+                // 初始化 Web Audio（用户手势内，符合自动播放策略）
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                nextPlayTime = audioCtx.currentTime + 0.1;
+                audioEventSource.addEventListener('audio', e => {
+                    try { playAudioChunk(JSON.parse(e.data).data); } catch (_) {}
+                });
+                audioEventSource.addEventListener('transcript', e => {
+                    try { appendTranscript(JSON.parse(e.data)); } catch (_) {}
+                });
+                audioEventSource.addEventListener('partial', e => {
+                    try { updatePartial(JSON.parse(e.data)); } catch (_) {}
+                });
+                audioEventSource.addEventListener('status', e => {
+                    try { updateAudioUI(JSON.parse(e.data)); } catch (_) {}
+                });
+                audioEventSource.onerror = () => { /* 自动重连由 EventSource 处理 */ };
+            } catch (e) {
+                showToast('建立实时连接失败', 'error');
+                return;
+            }
+            // 再启动服务端监听
+            try {
+                const resp = await fetch('/api/audio/start', { method: 'POST' });
+                const result = await resp.json();
+                if (result.success) {
+                    showToast('监听已开始', 'success');
+                    updateAudioUI({ listening: true, session_id: result.session_id, model_loaded: false });
+                } else {
+                    showToast('启动失败：' + (result.message || ''), 'error');
+                    if (audioEventSource) { audioEventSource.close(); audioEventSource = null; }
+                }
+            } catch (e) {
+                showToast('请求失败', 'error');
+            }
+        }
+
+        async function stopListening() {
+            try {
+                const resp = await fetch('/api/audio/stop', { method: 'POST' });
+                const result = await resp.json();
+                if (result.success) {
+                    showToast('监听已停止', 'success');
+                    updateAudioUI({ listening: false, session_id: null, model_loaded: true });
+                } else {
+                    showToast('停止失败：' + (result.message || ''), 'error');
+                }
+            } catch (e) {
+                showToast('请求失败', 'error');
+            } finally {
+                if (audioEventSource) { audioEventSource.close(); audioEventSource = null; }
             }
         }
 
