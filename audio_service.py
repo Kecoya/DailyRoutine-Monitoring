@@ -65,6 +65,9 @@ class AudioService:
         # 声音触发模式：检测到较大声音自动开转写，静音超时自动关（省算力）
         self.sound_activated = False
         self._last_loud_ts = 0.0
+        # 声音触发参数（运行时可调）
+        self.sound_threshold = AUDIO_SOUND_TRIGGER
+        self.sound_cooldown = AUDIO_SOUND_COOLDOWN
 
         # SSE 订阅者
         self._subscribers = []
@@ -317,12 +320,16 @@ class AudioService:
     #  声音触发模式（自动开关转写，省算力）
     # ================================================================
 
-    def enable_sound_activated(self):
+    def enable_sound_activated(self, threshold=None, cooldown=None):
         """开启声音触发模式：检测到较大声音自动开转写，静音超时自动关。"""
         if not self.is_listening:
             return {'success': False, 'message': '请先开始监听'}
         if self.sound_activated:
             return {'success': False, 'message': '声音触发已开启'}
+        if threshold is not None:
+            self.sound_threshold = max(0.001, min(0.5, float(threshold)))
+        if cooldown is not None:
+            self.sound_cooldown = max(0.5, min(60.0, float(cooldown)))
         # 预加载模型，使后续自动开启瞬时完成（识别器创建很快）
         try:
             self._ensure_model()
@@ -330,8 +337,27 @@ class AudioService:
             return {'success': False, 'message': f'模型加载失败：{e}'}
         self.sound_activated = True
         self._last_loud_ts = 0.0
-        logger.info("声音触发模式已开启（检测到声音将自动转写）")
+        logger.info(f"声音触发模式已开启（阈值 {self.sound_threshold}，冷却 {self.sound_cooldown}s）")
         self._broadcast('status', self.get_status())
+        return {'success': True}
+
+    def update_sound_config(self, threshold=None, cooldown=None):
+        """运行时调整声音触发参数（无需重启）"""
+        changed = []
+        if threshold is not None:
+            try:
+                self.sound_threshold = max(0.001, min(0.5, float(threshold)))
+                changed.append(f"阈值={self.sound_threshold}")
+            except (TypeError, ValueError):
+                pass
+        if cooldown is not None:
+            try:
+                self.sound_cooldown = max(0.5, min(60.0, float(cooldown)))
+                changed.append(f"冷却={self.sound_cooldown}s")
+            except (TypeError, ValueError):
+                pass
+        if changed:
+            logger.info(f"声音触发参数更新：{', '.join(changed)}")
         return {'success': True}
 
     def disable_sound_activated(self):
@@ -434,11 +460,11 @@ class AudioService:
             # 3) 声音触发模式：有较大声音→自动开转写；静音超时→自动关
             if self.sound_activated:
                 now = time.monotonic()
-                if rms >= AUDIO_SOUND_TRIGGER:
+                if rms >= self.sound_threshold:
                     self._last_loud_ts = now
                     if not self.asr_enabled:
                         self._auto_enable_asr()
-                elif self.asr_enabled and (now - self._last_loud_ts) > AUDIO_SOUND_COOLDOWN:
+                elif self.asr_enabled and (now - self._last_loud_ts) > self.sound_cooldown:
                     self._auto_disable_asr()
 
             # 4) 喂给 Vosk（仅当转写开启时；关闭时只采集+推流，省算力）
@@ -536,6 +562,8 @@ class AudioService:
             'listening': self.is_listening,
             'asr_enabled': self.asr_enabled,
             'sound_activated': self.sound_activated,
+            'sound_threshold': self.sound_threshold,
+            'sound_cooldown': self.sound_cooldown,
             'session_id': self.session_id,
             'session_dir': self.session_dir,
             'model_loaded': self._model_loaded,

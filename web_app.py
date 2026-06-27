@@ -468,8 +468,20 @@ def audio_asr_off():
 
 @app.route('/api/audio/sound/on', methods=['POST'])
 def audio_sound_on():
-    """开启声音触发模式（检测到声音自动转写）"""
-    return jsonify(audio_service.enable_sound_activated())
+    """开启声音触发模式。可选 ?threshold=&cooldown="""
+    threshold = request.args.get('threshold', type=float)
+    cooldown = request.args.get('cooldown', type=float)
+    return jsonify(audio_service.enable_sound_activated(
+        threshold=threshold, cooldown=cooldown))
+
+
+@app.route('/api/audio/sound/config', methods=['POST'])
+def audio_sound_config():
+    """运行时调整声音触发参数（阈值、冷却），无需重启"""
+    threshold = request.args.get('threshold', type=float)
+    cooldown = request.args.get('cooldown', type=float)
+    return jsonify(audio_service.update_sound_config(
+        threshold=threshold, cooldown=cooldown))
 
 
 @app.route('/api/audio/sound/off', methods=['POST'])

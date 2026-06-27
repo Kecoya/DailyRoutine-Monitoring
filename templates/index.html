@@ -745,10 +745,12 @@
                 <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:8px;">
                     <div style="display:flex; align-items:center; gap:8px;">
                         <span style="font-size:0.9em;color:var(--text-secondary);">输入电平:</span>
-                        <div style="width:200px; height:14px; background:var(--border); border-radius:7px; overflow:hidden;">
+                        <div style="position:relative; width:240px; height:14px; background:var(--border); border-radius:7px; overflow:hidden;">
                             <div id="audioLevelBar" style="width:0%; height:100%; background:linear-gradient(90deg,var(--success),var(--warning),var(--danger)); transition:width 0.05s;"></div>
+                            <div id="audioThresholdMarker" style="position:absolute; top:0; left:10%; width:2px; height:100%; background:#000; opacity:0.6; display:none;"></div>
                         </div>
                         <span id="audioLevelText" style="font-size:0.8em;color:var(--text-secondary);min-width:36px;">0%</span>
+                        <span style="font-size:0.75em;color:var(--text-secondary);">│ 黑线=触发阈值</span>
                     </div>
                     <div style="display:flex; align-items:center; gap:8px;">
                         <label style="font-size:0.9em;color:var(--text-secondary);">音量:</label>
@@ -756,6 +758,16 @@
                         <span id="audioVolumeText" style="font-size:0.8em;color:var(--text-secondary);">1.5×</span>
                     </div>
                     <button class="btn btn-secondary" id="btnTestTone" onclick="playTestTone()" style="padding:6px 14px;font-size:0.85em;">🔔 测试播放</button>
+                </div>
+                <div id="soundParamsRow" style="display:none; margin-top:12px; padding-top:12px; border-top:1px dashed var(--border); gap:16px; align-items:center; flex-wrap:wrap;">
+                    <span style="font-size:0.85em;color:var(--text-secondary);">声音触发参数（实时生效）：</span>
+                    <label style="font-size:0.85em;display:flex;align-items:center;gap:4px;">触发阈值
+                        <input type="number" id="soundThresholdInput" min="0.005" max="0.5" step="0.005" value="0.05" style="width:70px;padding:4px 6px;border:2px solid var(--border);border-radius:6px;font-size:0.85em;" onchange="updateSoundConfig()">
+                    </label>
+                    <label style="font-size:0.85em;display:flex;align-items:center;gap:4px;">静音关闭(秒)
+                        <input type="number" id="soundCooldownInput" min="0.5" max="60" step="0.5" value="3" style="width:60px;padding:4px 6px;border:2px solid var(--border);border-radius:6px;font-size:0.85em;" onchange="updateSoundConfig()">
+                    </label>
+                    <span style="font-size:0.75em;color:var(--text-secondary);">提示：若说话时转写不触发，把阈值调小（如0.02）</span>
                 </div>
             </div>
 
@@ -1463,6 +1475,27 @@
                 btnSound.textContent = '🔊 声音触发';
                 btnSound.style.background = 'var(--text-secondary)';
             }
+            // 声音触发参数面板 + 阈值标记
+            const paramsRow = document.getElementById('soundParamsRow');
+            const marker = document.getElementById('audioThresholdMarker');
+            if (d.sound_activated || d.asr_enabled) {
+                if (paramsRow) paramsRow.style.display = 'flex';
+            } else {
+                if (paramsRow) paramsRow.style.display = 'none';
+            }
+            const thrInput = document.getElementById('soundThresholdInput');
+            const cdInput = document.getElementById('soundCooldownInput');
+            if (d.sound_threshold != null && document.activeElement !== thrInput) {
+                if (thrInput) thrInput.value = d.sound_threshold;
+                if (marker) {
+                    const pct = Math.min(100, Math.max(0, d.sound_threshold * 200));
+                    marker.style.left = pct + '%';
+                    marker.style.display = 'block';
+                }
+            }
+            if (d.sound_cooldown != null && document.activeElement !== cdInput && cdInput) {
+                cdInput.value = d.sound_cooldown;
+            }
             modelText.textContent = d.model_loaded ? '已加载' : '加载中/未加载';
             sessionText.textContent = d.session_id || '—';
         }
@@ -1472,16 +1505,40 @@
             const turningOn = !btn.textContent.includes(':开');
             btn.disabled = true;
             try {
-                const url = turningOn ? '/api/audio/sound/on' : '/api/audio/sound/off';
+                let url = turningOn ? '/api/audio/sound/on' : '/api/audio/sound/off';
+                if (turningOn) {
+                    const thr = document.getElementById('soundThresholdInput').value || 0.05;
+                    const cd = document.getElementById('soundCooldownInput').value || 3;
+                    url += `?threshold=${thr}&cooldown=${cd}`;
+                }
                 const resp = await fetch(url, { method: 'POST' });
                 const result = await resp.json();
                 if (!result.success) {
                     showToast((turningOn ? '开启' : '关闭') + '声音触发失败：' + (result.message || ''), 'error');
+                } else if (turningOn) {
+                    showToast('声音触发已开启：说话时自动转写，静音后自动停（仅保存触发后的音频）', 'success');
                 }
             } catch (e) {
                 showToast('请求失败', 'error');
             } finally {
                 loadAudioStatus();
+            }
+        }
+
+        async function updateSoundConfig() {
+            const thr = document.getElementById('soundThresholdInput').value;
+            const cd = document.getElementById('soundCooldownInput').value;
+            try {
+                await fetch(`/api/audio/sound/config?threshold=${thr}&cooldown=${cd}`, { method: 'POST' });
+                // 立即更新阈值标记位置
+                const marker = document.getElementById('audioThresholdMarker');
+                if (marker) {
+                    marker.style.left = Math.min(100, Math.max(0, thr * 200)) + '%';
+                    marker.style.display = 'block';
+                }
+                showToast(`参数已更新（阈值 ${thr}，冷却 ${cd}s）`, 'success');
+            } catch (e) {
+                showToast('参数更新失败', 'error');
             }
         }
 
