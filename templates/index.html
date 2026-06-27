@@ -709,6 +709,10 @@
                     <div class="value" style="font-size:1.4em;color:var(--text-secondary)" id="audioAsrText">关闭</div>
                 </div>
                 <div class="stat-card">
+                    <div class="label">声音触发</div>
+                    <div class="value" style="font-size:1.4em;color:var(--text-secondary)" id="audioSoundText">关闭</div>
+                </div>
+                <div class="stat-card">
                     <div class="label">识别模型</div>
                     <div class="value" style="font-size:1.4em" id="audioModelText">未加载</div>
                 </div>
@@ -835,7 +839,7 @@
                 else if (tabName === 'week') loadWeekReport();
                 else if (tabName === 'month') loadMonthReport();
                 else if (tabName === 'camera') { loadCameraStatus(); loadCaptureImages('temp'); loadPresenceStatus(); }
-                else if (tabName === 'audio') loadAudioStatus();
+                else if (tabName === 'audio') { loadAudioStatus(); loadAudioDevices(); }
             });
         });
 
@@ -1399,7 +1403,15 @@
                 const resp = await fetch('/api/audio/status');
                 const result = await resp.json();
                 if (result.success) updateAudioUI(result.data);
-                await loadAudioDevices();
+            } catch (e) { /* ignore */ }
+        }
+
+        // 轻量轮询：仅刷新状态（含声音触发实时状态），不重载设备列表
+        async function pollAudioStatus() {
+            try {
+                const resp = await fetch('/api/audio/status');
+                const result = await resp.json();
+                if (result.success) updateAudioUI(result.data);
             } catch (e) { /* ignore */ }
         }
 
@@ -1475,13 +1487,26 @@
                 btnSound.textContent = '🔊 声音触发';
                 btnSound.style.background = 'var(--text-secondary)';
             }
-            // 声音触发参数面板 + 阈值标记
+            // 声音触发参数面板 + 阈值标记（监听中即显示，便于随时调整）
             const paramsRow = document.getElementById('soundParamsRow');
             const marker = document.getElementById('audioThresholdMarker');
-            if (d.sound_activated || d.asr_enabled) {
-                if (paramsRow) paramsRow.style.display = 'flex';
-            } else {
-                if (paramsRow) paramsRow.style.display = 'none';
+            if (paramsRow) paramsRow.style.display = d.listening ? 'flex' : 'none';
+            // 声音触发状态卡片
+            const soundText = document.getElementById('audioSoundText');
+            if (soundText) {
+                if (!d.listening) {
+                    soundText.textContent = '关闭';
+                    soundText.style.color = 'var(--text-secondary)';
+                } else if (!d.sound_activated) {
+                    soundText.textContent = '未启用';
+                    soundText.style.color = 'var(--text-secondary)';
+                } else if (d.asr_enabled) {
+                    soundText.textContent = '转写中';
+                    soundText.style.color = 'var(--success)';
+                } else {
+                    soundText.textContent = '等待声音';
+                    soundText.style.color = 'var(--warning)';
+                }
             }
             const thrInput = document.getElementById('soundThresholdInput');
             const cdInput = document.getElementById('soundCooldownInput');
@@ -1839,6 +1864,7 @@
             initDateSelectors();
             setInterval(checkStatus, 15000);
             setInterval(loadPresenceStatus, 11000);  // 在场检测状态轮询（与检测周期同步）
+            setInterval(pollAudioStatus, 2000);      // 声音触发实时状态轮询（等待声音/转写中）
         });
     </script>
 </body>
