@@ -659,6 +659,27 @@
                     <div class="loading-text">加载中...</div>
                 </div>
             </div>
+            <div class="report-summary" style="margin-bottom: 16px;">
+                <h3>👁 在场检测（低CPU）</h3>
+                <p style="color: var(--text-secondary); font-size: 0.85em; margin-bottom: 12px;">
+                    每隔指定秒数拍一帧并用 Haar 级联检测人脸（纯CPU，无深度学习），判断镜头前是否有人正对屏幕。
+                    <strong>检测到人时弹出 Windows 系统通知</strong>（仅从"离场"变"在场"时通知一次，避免刷屏）。结果记录到 <code>data/presence/</code>。
+                </p>
+                <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
+                    <button class="btn" id="btnPresenceToggle" onclick="togglePresence()">👁 开启在场检测</button>
+                    <label style="font-size:0.9em;color:var(--text-secondary);">间隔(秒):</label>
+                    <input type="number" id="presenceIntervalInput" min="5" max="300" step="1" value="15" style="width:70px;padding:6px 8px;border:2px solid var(--border);border-radius:8px;font-size:0.9em;" onchange="updatePresenceConfig()">
+                    <label style="font-size:0.9em;color:var(--text-secondary);display:flex;align-items:center;gap:4px;">
+                        <input type="checkbox" id="presenceNotifyInput" checked onchange="updatePresenceConfig()"> 检测到人通知
+                    </label>
+                </div>
+                <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; font-size:0.85em;">
+                    <span>状态：<span id="presenceStateText" style="font-weight:600;color:var(--text-secondary);">未运行</span></span>
+                    <span style="color:var(--text-secondary);">| 最近在场率：<span id="presenceRateText" style="font-weight:600;color:var(--text);">—</span></span>
+                    <span style="color:var(--text-secondary);">| 最近检测：<span id="presenceLatestText" style="color:var(--text);">—</span></span>
+                </div>
+            </div>
+
             <div class="exclusion-info" style="margin-bottom: 16px;">
                 <h4>ℹ️ 摄像头说明</h4>
                 <p style="color: #92400e; font-size: 0.9em; line-height: 1.8;">
@@ -673,24 +694,6 @@
                 <button class="btn" style="background: var(--warning);" onclick="loadGifs()">🎬 GIF 动图</button>
             </div>
             <div id="captureGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;"></div>
-
-            <div class="report-summary" style="margin-top: 24px;">
-                <h3>👁 在场检测（低CPU）</h3>
-                <p style="color: var(--text-secondary); font-size: 0.85em; margin-bottom: 12px;">
-                    开启后每隔 10 秒拍一帧并用 Haar 级联检测人脸（纯CPU，无深度学习），
-                    判断镜头前是否有人正对屏幕。结果记录到 <code>data/presence/</code>。
-                </p>
-                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
-                    <button class="btn" id="btnPresenceToggle" onclick="togglePresence()">👁 开启在场检测</button>
-                    <span style="font-size:0.9em;">状态：</span>
-                    <span id="presenceStateText" style="font-size:0.95em;font-weight:600;color:var(--text-secondary);">未运行</span>
-                    <span style="font-size:0.85em;color:var(--text-secondary);">| 最近在场率：</span>
-                    <span id="presenceRateText" style="font-size:0.95em;font-weight:600;">—</span>
-                </div>
-                <div style="font-size:0.85em;color:var(--text-secondary);">
-                    <span>最近检测：</span><span id="presenceLatestText">—</span>
-                </div>
-            </div>
         </div>
 
         <!-- Audio Monitoring -->
@@ -1698,6 +1701,8 @@
             const state = document.getElementById('presenceStateText');
             const rate = document.getElementById('presenceRateText');
             const latest = document.getElementById('presenceLatestText');
+            const intervalInput = document.getElementById('presenceIntervalInput');
+            const notifyInput = document.getElementById('presenceNotifyInput');
             if (d.running) {
                 btn.textContent = '⏹ 停止在场检测';
                 btn.style.background = 'var(--danger)';
@@ -1708,6 +1713,13 @@
                 btn.style.background = 'var(--primary)';
                 state.textContent = '未运行';
                 state.style.color = 'var(--text-secondary)';
+            }
+            // 同步参数到输入框（仅当未在编辑时）
+            if (d.interval != null && document.activeElement !== intervalInput) {
+                intervalInput.value = d.interval;
+            }
+            if (d.notify != null && notifyInput) {
+                notifyInput.checked = d.notify;
             }
             rate.textContent = d.presence_rate != null ? `${d.presence_rate}%` : '—';
             if (d.latest) {
@@ -1723,19 +1735,39 @@
             const turningOn = btn.textContent.includes('开启');
             btn.disabled = true;
             try {
-                const url = turningOn ? '/api/camera/presence/on' : '/api/camera/presence/off';
+                let url = turningOn ? '/api/camera/presence/on' : '/api/camera/presence/off';
+                if (turningOn) {
+                    const interval = document.getElementById('presenceIntervalInput').value || 15;
+                    const notify = document.getElementById('presenceNotifyInput').checked ? 'true' : 'false';
+                    url += `?interval=${interval}&notify=${notify}`;
+                }
                 const resp = await fetch(url, { method: 'POST' });
                 const result = await resp.json();
                 if (!result.success) {
                     showToast((turningOn ? '开启' : '停止') + '失败：' + (result.message || ''), 'error');
+                } else if (turningOn) {
+                    const interval = document.getElementById('presenceIntervalInput').value || 15;
+                    showToast(`在场检测已开启（每 ${interval} 秒检测，检测到人会弹通知）`, 'success');
                 } else {
-                    showToast(turningOn ? '在场检测已开启（每10秒检测）' : '在场检测已停止', 'success');
+                    showToast('在场检测已停止', 'success');
                 }
             } catch (e) {
                 showToast('请求失败', 'error');
             } finally {
                 btn.disabled = false;
                 loadPresenceStatus();
+            }
+        }
+
+        // 运行时调整参数（间隔/通知），立即生效
+        async function updatePresenceConfig() {
+            const interval = document.getElementById('presenceIntervalInput').value;
+            const notify = document.getElementById('presenceNotifyInput').checked ? 'true' : 'false';
+            try {
+                await fetch(`/api/camera/presence/config?interval=${interval}&notify=${notify}`, { method: 'POST' });
+                showToast(`参数已更新（间隔 ${interval}s，通知${notify === 'true' ? '开' : '关'}）`, 'success');
+            } catch (e) {
+                showToast('参数更新失败', 'error');
             }
         }
 

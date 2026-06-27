@@ -402,10 +402,26 @@ def presence_status():
 
 @app.route('/api/camera/presence/on', methods=['POST'])
 def presence_on():
-    """开启在场检测"""
+    """开启在场检测。可选 ?interval=&notify= 覆盖参数"""
     if not monitor or not getattr(monitor, 'camera_service', None):
         return jsonify({'success': False, 'message': '摄像头服务未初始化'})
-    return jsonify(monitor.camera_service.start_presence_detection())
+    interval = request.args.get('interval', type=int)
+    notify = request.args.get('notify', type=str)
+    notify_val = None if notify is None else (notify.lower() == 'true')
+    return jsonify(monitor.camera_service.start_presence_detection(
+        interval=interval, notify=notify_val))
+
+
+@app.route('/api/camera/presence/config', methods=['POST'])
+def presence_config():
+    """运行时调整在场检测参数（间隔、通知），无需重启"""
+    if not monitor or not getattr(monitor, 'camera_service', None):
+        return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+    interval = request.args.get('interval', type=int)
+    notify = request.args.get('notify', type=str)
+    notify_val = None if notify is None else (notify.lower() == 'true')
+    return jsonify(monitor.camera_service.update_presence_config(
+        interval=interval, notify=notify_val))
 
 
 @app.route('/api/camera/presence/off', methods=['POST'])

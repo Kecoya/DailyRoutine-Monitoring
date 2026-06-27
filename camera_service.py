@@ -49,6 +49,10 @@ class CameraService:
         self._face_cascade = None
         self._presence_results = []   # 最近若干条检测结果（内存缓存，供 API）
         self._presence_file = None    # 当天 CSV 路径
+        # 运行时可调参数（Web 界面）
+        self.presence_interval = PRESENCE_INTERVAL_SEC
+        self.presence_notify = True
+        self._last_present = None     # 上一次是否在场（用于边沿触发通知）
 
     # ================================================================
     #  摄像头抓拍（每次独立开关，全程持锁）
@@ -664,10 +668,18 @@ class CameraService:
         )
         return len(faces)
 
-    def start_presence_detection(self):
-        """开启在场检测"""
+    def start_presence_detection(self, interval=None, notify=None):
+        """开启在场检测。interval/notify 可覆盖运行时参数。"""
         if self.presence_running:
             return {'success': False, 'message': '在场检测已在运行'}
+        if interval is not None:
+            try:
+                self.presence_interval = max(5, min(600, int(interval)))
+            except (TypeError, ValueError):
+                pass
+        if notify is not None:
+            self.presence_notify = bool(notify)
+        self._last_present = None  # 重置边沿状态，首次检测到人即通知
         self.presence_running = True
         os.makedirs(PRESENCE_DIR, exist_ok=True)
         self._presence_file = os.path.join(
@@ -681,7 +693,24 @@ class CameraService:
                 logger.error(f"创建在场检测日志失败：{e}")
         self._presence_thread = threading.Thread(target=self._presence_loop, daemon=True)
         self._presence_thread.start()
-        logger.info(f"在场检测已启动，间隔 {PRESENCE_INTERVAL_SEC} 秒")
+        logger.info(f"在场检测已启动，间隔 {self.presence_interval} 秒，通知 {'开' if self.presence_notify else '关'}")
+        return {'success': True}
+
+    def update_presence_config(self, interval=None, notify=None):
+        """运行时调整参数（无需重启检测）"""
+        changed = []
+        if interval is not None:
+            try:
+                v = max(5, min(600, int(interval)))
+                self.presence_interval = v
+                changed.append(f"间隔={v}s")
+            except (TypeError, ValueError):
+                pass
+        if notify is not None:
+            self.presence_notify = bool(notify)
+            changed.append(f"通知={'开' if self.presence_notify else '关'}")
+        if changed:
+            logger.info(f"在场检测参数更新：{', '.join(changed)}")
         return {'success': True}
 
     def stop_presence_detection(self):
@@ -692,6 +721,7 @@ class CameraService:
         if self._presence_thread and self._presence_thread.is_alive():
             self._presence_thread.join(timeout=15)
         self._presence_thread = None
+        self._last_present = None
         logger.info("在场检测已停止")
         return {'success': True}
 
@@ -725,11 +755,63 @@ class CameraService:
                     logger.error(f"写入在场检测日志失败：{e}")
             logger.info(f"在场检测: {'在场' if present else '离场'}（人脸 {face_count}）")
 
-            # 分段睡眠，使 stop 响应及时
-            for _ in range(PRESENCE_INTERVAL_SEC):
-                if not self.presence_running:
-                    break
+            # 边沿触发通知：仅 离场→在场 转变时弹通知（避免每周期刷屏）
+            if present and self.presence_notify and self._last_present is not True:
+                self._notify_windows(
+                    '👁 检测到在场',
+                    f'镜头前检测到 {face_count} 个人脸（{ts.strftime("%H:%M:%S")}）',
+                )
+            self._last_present = present
+
+            # 分段睡眠，使 stop 响应及时；间隔运行时可调（每秒重读）
+            slept = 0
+            target = self.presence_interval
+            while slept < target and self.presence_running:
                 time.sleep(1)
+                slept += 1
+                target = self.presence_interval  # 实时跟随参数变化
+
+    @staticmethod
+    def _notify_windows(title, message):
+        """
+        弹出 Windows 系统通知（非阻塞：在后台线程执行）。
+        优先 win11toast（原生 Toast），回退 PowerShell 气球通知。
+        """
+        def _worker():
+            # 1) 优先 win11toast（原生 Win10/11 Toast，但会阻塞至消失，故放线程内）
+            try:
+                from win11toast import toast
+                toast(title, message, duration='short')
+                return
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.debug(f"win11toast 通知失败，回退 PowerShell：{e}")
+            # 2) 回退：PowerShell NotifyIcon 气球通知（无需额外依赖）
+            try:
+                import subprocess
+                t = str(title).replace("'", "''")
+                m = str(message).replace("'", "''")
+                ps = (
+                    "Add-Type -AssemblyName System.Windows.Forms;"
+                    "$n=New-Object System.Windows.Forms.NotifyIcon;"
+                    "$n.Icon=[System.Drawing.SystemIcons]::Information;"
+                    f"$n.BalloonTipTitle='{t}';"
+                    f"$n.BalloonTipText='{m}';"
+                    "$n.Visible=$true;"
+                    "$n.ShowBalloonTip(5000);"
+                    "Start-Sleep -Seconds 6;"
+                    "$n.Dispose()"
+                )
+                subprocess.Popen(
+                    ['powershell', '-NoProfile', '-Command', ps],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                )
+            except Exception as e:
+                logger.error(f"Windows 通知发送失败：{e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def get_presence_status(self):
         """获取在场检测状态与最近记录"""
@@ -743,6 +825,8 @@ class CameraService:
             rate = None
         return {
             'running': self.presence_running,
+            'interval': self.presence_interval,
+            'notify': self.presence_notify,
             'latest': latest,
             'recent': recent,
             'presence_rate': rate,
