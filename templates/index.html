@@ -684,6 +684,10 @@
                     <div class="value" style="font-size:1.4em; color:var(--danger)" id="audioStateText">未监听</div>
                 </div>
                 <div class="stat-card">
+                    <div class="label">实时转写</div>
+                    <div class="value" style="font-size:1.4em;color:var(--text-secondary)" id="audioAsrText">关闭</div>
+                </div>
+                <div class="stat-card">
                     <div class="label">识别模型</div>
                     <div class="value" style="font-size:1.4em" id="audioModelText">未加载</div>
                 </div>
@@ -710,6 +714,7 @@
                 <select id="audioDeviceSelect" style="padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:0.9em;max-width:280px;">
                     <option value="">系统默认</option>
                 </select>
+                <button class="btn btn-secondary" id="btnAsrToggle" onclick="toggleAsr()" disabled style="background:var(--text-secondary);">📝 开启转写</button>
                 <span id="audioListeningHint" style="color:var(--text-secondary);font-size:0.9em;"></span>
             </div>
 
@@ -735,7 +740,7 @@
             <div class="chart-container" style="text-align:left;">
                 <h3>📝 实时转写</h3>
                 <div id="transcriptBox" style="max-height:360px; overflow-y:auto; background:var(--bg); border-radius:12px; padding:16px; font-size:0.95em; line-height:1.8;">
-                    <p style="color:var(--text-secondary);">点击「开始监听」后，识别出的中文将实时显示在此...</p>
+                    <p style="color:var(--text-secondary);">开始监听后，点「📝 开启转写」即可在此实时显示中文识别结果（默认关闭以省算力）...</p>
                 </div>
             </div>
         </div>
@@ -1385,10 +1390,12 @@
 
         function updateAudioUI(d) {
             const stateText = document.getElementById('audioStateText');
+            const asrText = document.getElementById('audioAsrText');
             const modelText = document.getElementById('audioModelText');
             const sessionText = document.getElementById('audioSessionText');
             const btnStart = document.getElementById('btnAudioStart');
             const btnStop = document.getElementById('btnAudioStop');
+            const btnAsr = document.getElementById('btnAsrToggle');
             const hint = document.getElementById('audioListeningHint');
 
             if (d.listening) {
@@ -1396,16 +1403,52 @@
                 stateText.style.color = 'var(--success)';
                 btnStart.disabled = true;
                 btnStop.disabled = false;
-                hint.textContent = '🔴 正在实时监听...';
+                btnAsr.disabled = false;
+                hint.textContent = d.asr_enabled ? '🔴 监听+转写中...' : '🔴 监听中（转写已关闭，省算力）';
             } else {
                 stateText.textContent = '未监听';
                 stateText.style.color = 'var(--danger)';
                 btnStart.disabled = false;
                 btnStop.disabled = true;
+                btnAsr.disabled = true;
                 hint.textContent = '';
+            }
+
+            // 转写开关按钮状态
+            if (d.asr_enabled) {
+                asrText.textContent = '开启';
+                asrText.style.color = 'var(--success)';
+                btnAsr.textContent = '📝 关闭转写';
+                btnAsr.style.background = 'var(--danger)';
+            } else {
+                asrText.textContent = '关闭';
+                asrText.style.color = 'var(--text-secondary)';
+                btnAsr.textContent = '📝 开启转写';
+                btnAsr.style.background = 'var(--success)';
             }
             modelText.textContent = d.model_loaded ? '已加载' : '加载中/未加载';
             sessionText.textContent = d.session_id || '—';
+        }
+
+        async function toggleAsr() {
+            const btn = document.getElementById('btnAsrToggle');
+            const turningOn = btn.textContent.includes('开启');
+            btn.disabled = true;
+            const orig = btn.textContent;
+            btn.textContent = turningOn ? '加载模型中...' : '关闭中...';
+            try {
+                const url = turningOn ? '/api/audio/asr/on' : '/api/audio/asr/off';
+                const resp = await fetch(url, { method: 'POST' });
+                const result = await resp.json();
+                if (!result.success) {
+                    showToast((turningOn ? '开启' : '关闭') + '转写失败：' + (result.message || ''), 'error');
+                }
+            } catch (e) {
+                showToast('请求失败', 'error');
+            } finally {
+                btn.disabled = false;
+                loadAudioStatus();
+            }
         }
 
         // 解码 base64 int16 PCM → Float32，更新输入电平，并经音量节点无缝播放
@@ -1533,6 +1576,16 @@
                 });
                 audioEventSource.addEventListener('partial', e => {
                     try { updatePartial(JSON.parse(e.data)); } catch (_) {}
+                });
+                audioEventSource.addEventListener('asr_state', e => {
+                    try {
+                        const st = JSON.parse(e.data);
+                        if (!st.enabled) {
+                            // 转写关闭：清除实时部分行
+                            const live = document.getElementById('audioLivePartial');
+                            if (live) live.remove();
+                        }
+                    } catch (_) {}
                 });
                 audioEventSource.addEventListener('status', e => {
                     try { updateAudioUI(JSON.parse(e.data)); } catch (_) {}

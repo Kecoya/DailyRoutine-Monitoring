@@ -56,6 +56,11 @@ class AudioService:
         self._model_lock = threading.Lock()
         self._model_loaded = False
 
+        # 实时转写开关（默认关闭，按需开启以节省算力）
+        # 关闭时：只采集+推流（低开销）；开启时：额外加载模型并实时识别
+        self.asr_enabled = False
+        self._asr_lock = threading.Lock()
+
         # SSE 订阅者
         self._subscribers = []
         self._sub_lock = threading.Lock()
@@ -163,23 +168,14 @@ class AudioService:
             except (TypeError, ValueError):
                 self.device = None
 
-        # 先确保模型可用
-        try:
-            self._ensure_model()
-        except Exception as e:
-            logger.error(f"模型加载失败：{e}")
-            return {'success': False, 'message': str(e)}
-
-        from vosk import KaldiRecognizer
-        self._recognizer = KaldiRecognizer(self._model, AUDIO_SAMPLE_RATE)
-
-        # 会话目录
+        # 会话目录（监听即建立；WAV/文本仅在开启转写后写入）
         self.session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.session_dir = os.path.join(AUDIO_SESSIONS_DIR, self.session_id)
         os.makedirs(self.session_dir, exist_ok=True)
         self.transcript_path = os.path.join(self.session_dir, 'transcript.txt')
 
-        # 重置状态
+        # 重置转写状态
+        self.asr_enabled = False
         self._utterance_chunks = []
         self._in_utterance = False
         self._utterance_start = None
@@ -250,9 +246,65 @@ class AudioService:
             except Exception:
                 pass
             self._recognizer = None
+        self.asr_enabled = False
 
         logger.info("音频监听已停止")
         self._broadcast('status', self.get_status())
+        return {'success': True}
+
+    # ================================================================
+    #  实时转写开关（监听期间按需启停，节省算力）
+    # ================================================================
+
+    def enable_asr(self):
+        """开启实时转写：加载模型 + 新建识别器。仅监听中可用。"""
+        if not self.is_listening:
+            return {'success': False, 'message': '请先开始监听'}
+        if self.asr_enabled and self._recognizer is not None:
+            return {'success': False, 'message': '转写已开启'}
+
+        with self._asr_lock:
+            try:
+                self._ensure_model()
+            except Exception as e:
+                logger.error(f"开启转写失败（模型加载）：{e}")
+                return {'success': False, 'message': str(e)}
+            from vosk import KaldiRecognizer
+            self._recognizer = KaldiRecognizer(self._model, AUDIO_SAMPLE_RATE)
+            # 重置一句话累积状态
+            self._utterance_chunks = []
+            self._in_utterance = False
+            self._utterance_start = None
+            self.asr_enabled = True
+
+        logger.info("实时转写已开启")
+        self._broadcast('status', self.get_status())
+        self._broadcast('asr_state', {'enabled': True})
+        return {'success': True}
+
+    def disable_asr(self):
+        """关闭实时转写：刷新残留结果、释放识别器。监听继续。"""
+        if not self.asr_enabled:
+            return {'success': False, 'message': '转写未开启'}
+
+        with self._asr_lock:
+            self.asr_enabled = False
+            if self._recognizer is not None:
+                try:
+                    final = json.loads(self._recognizer.FinalResult())
+                    text = (final.get('text') or '').strip()
+                    if text:
+                        self._commit_utterance(text)
+                except Exception:
+                    pass
+                self._recognizer = None
+            self._utterance_chunks = []
+            self._in_utterance = False
+            self._utterance_start = None
+
+        logger.info("实时转写已关闭")
+        self._broadcast('status', self.get_status())
+        self._broadcast('asr_state', {'enabled': False})
         return {'success': True}
 
     @staticmethod
@@ -295,12 +347,13 @@ class AudioService:
             except Exception as e:
                 logger.error(f"推送音频流失败：{e}")
 
-            # 2) 喂给 Vosk
-            if self._recognizer is None:
+            # 2) 喂给 Vosk（仅当转写开启时；关闭时只采集+推流，省算力）
+            rec = self._recognizer
+            if not self.asr_enabled or rec is None:
                 continue
             try:
                 chunk_bytes = chunk.tobytes()
-                if self._recognizer.AcceptWaveform(chunk_bytes):
+                if rec.AcceptWaveform(chunk_bytes):
                     # 一句话结束 → 最终结果
                     result = json.loads(self._recognizer.Result())
                     text = (result.get('text') or '').strip()
@@ -314,7 +367,7 @@ class AudioService:
                 else:
                     # 部分结果
                     if AUDIO_PARTIAL_RESULTS:
-                        partial = json.loads(self._recognizer.PartialResult()).get('partial', '')
+                        partial = json.loads(rec.PartialResult()).get('partial', '')
                         if partial:
                             if not self._in_utterance:
                                 self._in_utterance = True
@@ -387,6 +440,7 @@ class AudioService:
         return {
             'enabled': True,
             'listening': self.is_listening,
+            'asr_enabled': self.asr_enabled,
             'session_id': self.session_id,
             'session_dir': self.session_dir,
             'model_loaded': self._model_loaded,

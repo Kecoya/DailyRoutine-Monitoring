@@ -412,6 +412,18 @@ def audio_start():
     return jsonify(result)
 
 
+@app.route('/api/audio/asr/on', methods=['POST'])
+def audio_asr_on():
+    """开启实时转写"""
+    return jsonify(audio_service.enable_asr())
+
+
+@app.route('/api/audio/asr/off', methods=['POST'])
+def audio_asr_off():
+    """关闭实时转写"""
+    return jsonify(audio_service.disable_asr())
+
+
 @app.route('/api/audio/stop', methods=['POST'])
 def audio_stop():
     """停止监听"""
