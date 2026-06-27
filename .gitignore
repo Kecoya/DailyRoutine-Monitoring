@@ -83,3 +83,4 @@ desktop.ini
 
 # Claude Code
 .claude/
+data/presence/

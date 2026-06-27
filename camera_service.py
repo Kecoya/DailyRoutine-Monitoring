@@ -23,6 +23,7 @@ from config import (
     CAPTURE_MAX_TEMP_FILES, CAPTURE_AUTO_CLEANUP, CAPTURE_CLEANUP_DAYS,
     CAPTURE_GIF_FPS, CAPTURE_WARMUP_FRAMES,
     CAPTURE_TIMESTAMP_ENABLED, CAPTURE_TIMESTAMP_SCALE,
+    PRESENCE_DIR, PRESENCE_INTERVAL_SEC, PRESENCE_FRAME_WIDTH, PRESENCE_FACE_MINSIZE,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,13 @@ class CameraService:
         self._main_thread = None
         # 抓拍进行中标志（仅在 _capture_one 执行期间为 True，供 get_status 反映状态）
         self._capture_in_progress = False
+
+        # 在场检测（每 N 秒拍照 + Haar 人脸检测，纯 CPU）
+        self.presence_running = False
+        self._presence_thread = None
+        self._face_cascade = None
+        self._presence_results = []   # 最近若干条检测结果（内存缓存，供 API）
+        self._presence_file = None    # 当天 CSV 路径
 
     # ================================================================
     #  摄像头抓拍（每次独立开关，全程持锁）
@@ -622,3 +630,122 @@ class CameraService:
                 'size_kb': round(stat.st_size / 1024, 1),
             })
         return result
+
+    # ================================================================
+    #  在场检测（每 N 秒拍照 + Haar 人脸检测，纯 CPU 低占用）
+    # ================================================================
+
+    def _get_face_cascade(self):
+        """懒加载 OpenCV 自带的正面人脸 Haar 级联（无需额外下载）"""
+        if self._face_cascade is None:
+            cascade_path = os.path.join(
+                cv2.data.haarcascades, 'haarcascade_frontalface_default.xml'
+            )
+            cascade = cv2.CascadeClassifier(cascade_path)
+            if cascade.empty():
+                raise RuntimeError(f"无法加载 Haar 级联：{cascade_path}")
+            self._face_cascade = cascade
+        return self._face_cascade
+
+    def _detect_faces(self, frame):
+        """检测帧中的人脸数量。缩放到固定宽度以降低 CPU 占用。"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.equalizeHist(gray)  # 直方图均衡，提升暗光下检出率
+        h, w = gray.shape[:2]
+        if w > PRESENCE_FRAME_WIDTH:
+            scale = PRESENCE_FRAME_WIDTH / w
+            gray = cv2.resize(gray, (PRESENCE_FRAME_WIDTH, int(h * scale)))
+        cascade = self._get_face_cascade()
+        faces = cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=4,
+            minSize=(PRESENCE_FACE_MINSIZE, PRESENCE_FACE_MINSIZE),
+        )
+        return len(faces)
+
+    def start_presence_detection(self):
+        """开启在场检测"""
+        if self.presence_running:
+            return {'success': False, 'message': '在场检测已在运行'}
+        self.presence_running = True
+        os.makedirs(PRESENCE_DIR, exist_ok=True)
+        self._presence_file = os.path.join(
+            PRESENCE_DIR, f'presence_{datetime.now().strftime("%Y%m%d")}.csv'
+        )
+        if not os.path.exists(self._presence_file):
+            try:
+                with open(self._presence_file, 'w', encoding='utf-8') as f:
+                    f.write('timestamp,present,face_count\n')
+            except Exception as e:
+                logger.error(f"创建在场检测日志失败：{e}")
+        self._presence_thread = threading.Thread(target=self._presence_loop, daemon=True)
+        self._presence_thread.start()
+        logger.info(f"在场检测已启动，间隔 {PRESENCE_INTERVAL_SEC} 秒")
+        return {'success': True}
+
+    def stop_presence_detection(self):
+        """停止在场检测"""
+        if not self.presence_running:
+            return {'success': False, 'message': '在场检测未运行'}
+        self.presence_running = False
+        if self._presence_thread and self._presence_thread.is_alive():
+            self._presence_thread.join(timeout=15)
+        self._presence_thread = None
+        logger.info("在场检测已停止")
+        return {'success': True}
+
+    def _presence_loop(self):
+        """每 N 秒抓拍一帧并检测人脸"""
+        while self.presence_running:
+            present = False
+            face_count = 0
+            try:
+                frame = self._grab_frame()
+                if frame is not None:
+                    face_count = self._detect_faces(frame)
+                    present = face_count > 0
+            except Exception as e:
+                logger.error(f"在场检测异常：{e}")
+
+            ts = datetime.now()
+            record = {
+                'timestamp': ts.strftime('%Y-%m-%d %H:%M:%S'),
+                'present': present,
+                'face_count': face_count,
+            }
+            self._presence_results.append(record)
+            if len(self._presence_results) > 60:
+                self._presence_results = self._presence_results[-60:]
+            if self._presence_file:
+                try:
+                    with open(self._presence_file, 'a', encoding='utf-8') as f:
+                        f.write(f"{ts.strftime('%Y-%m-%d %H:%M:%S')},{int(present)},{face_count}\n")
+                except Exception as e:
+                    logger.error(f"写入在场检测日志失败：{e}")
+            logger.info(f"在场检测: {'在场' if present else '离场'}（人脸 {face_count}）")
+
+            # 分段睡眠，使 stop 响应及时
+            for _ in range(PRESENCE_INTERVAL_SEC):
+                if not self.presence_running:
+                    break
+                time.sleep(1)
+
+    def get_presence_status(self):
+        """获取在场检测状态与最近记录"""
+        latest = self._presence_results[-1] if self._presence_results else None
+        # 最近 N 条按时间正序
+        recent = self._presence_results[-20:]
+        # 在场率（最近 20 条中在场的比例）
+        if recent:
+            rate = round(sum(1 for r in recent if r['present']) / len(recent) * 100)
+        else:
+            rate = None
+        return {
+            'running': self.presence_running,
+            'latest': latest,
+            'recent': recent,
+            'presence_rate': rate,
+            'log_file': self._presence_file,
+        }
+

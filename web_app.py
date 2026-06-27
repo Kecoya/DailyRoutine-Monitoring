@@ -390,6 +390,32 @@ def serve_capture(filename):
     return jsonify({'success': False, 'message': '文件不存在'}), 404
 
 
+# ===== 在场检测 API =====
+
+@app.route('/api/camera/presence/status')
+def presence_status():
+    """获取在场检测状态"""
+    if not monitor or not getattr(monitor, 'camera_service', None):
+        return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+    return jsonify({'success': True, 'data': monitor.camera_service.get_presence_status()})
+
+
+@app.route('/api/camera/presence/on', methods=['POST'])
+def presence_on():
+    """开启在场检测"""
+    if not monitor or not getattr(monitor, 'camera_service', None):
+        return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+    return jsonify(monitor.camera_service.start_presence_detection())
+
+
+@app.route('/api/camera/presence/off', methods=['POST'])
+def presence_off():
+    """停止在场检测"""
+    if not monitor or not getattr(monitor, 'camera_service', None):
+        return jsonify({'success': False, 'message': '摄像头服务未初始化'})
+    return jsonify(monitor.camera_service.stop_presence_detection())
+
+
 # ===== 音频监听 API =====
 
 @app.route('/api/audio/status')
@@ -422,6 +448,18 @@ def audio_asr_on():
 def audio_asr_off():
     """关闭实时转写"""
     return jsonify(audio_service.disable_asr())
+
+
+@app.route('/api/audio/sound/on', methods=['POST'])
+def audio_sound_on():
+    """开启声音触发模式（检测到声音自动转写）"""
+    return jsonify(audio_service.enable_sound_activated())
+
+
+@app.route('/api/audio/sound/off', methods=['POST'])
+def audio_sound_off():
+    """关闭声音触发模式"""
+    return jsonify(audio_service.disable_sound_activated())
 
 
 @app.route('/api/audio/stop', methods=['POST'])

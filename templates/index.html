@@ -673,6 +673,24 @@
                 <button class="btn" style="background: var(--warning);" onclick="loadGifs()">🎬 GIF 动图</button>
             </div>
             <div id="captureGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;"></div>
+
+            <div class="report-summary" style="margin-top: 24px;">
+                <h3>👁 在场检测（低CPU）</h3>
+                <p style="color: var(--text-secondary); font-size: 0.85em; margin-bottom: 12px;">
+                    开启后每隔 10 秒拍一帧并用 Haar 级联检测人脸（纯CPU，无深度学习），
+                    判断镜头前是否有人正对屏幕。结果记录到 <code>data/presence/</code>。
+                </p>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
+                    <button class="btn" id="btnPresenceToggle" onclick="togglePresence()">👁 开启在场检测</button>
+                    <span style="font-size:0.9em;">状态：</span>
+                    <span id="presenceStateText" style="font-size:0.95em;font-weight:600;color:var(--text-secondary);">未运行</span>
+                    <span style="font-size:0.85em;color:var(--text-secondary);">| 最近在场率：</span>
+                    <span id="presenceRateText" style="font-size:0.95em;font-weight:600;">—</span>
+                </div>
+                <div style="font-size:0.85em;color:var(--text-secondary);">
+                    <span>最近检测：</span><span id="presenceLatestText">—</span>
+                </div>
+            </div>
         </div>
 
         <!-- Audio Monitoring -->
@@ -715,6 +733,7 @@
                     <option value="">系统默认</option>
                 </select>
                 <button class="btn btn-secondary" id="btnAsrToggle" onclick="toggleAsr()" disabled style="background:var(--text-secondary);">📝 开启转写</button>
+                <button class="btn" id="btnSoundToggle" onclick="toggleSound()" disabled style="background:var(--text-secondary);">🔊 声音触发</button>
                 <span id="audioListeningHint" style="color:var(--text-secondary);font-size:0.9em;"></span>
             </div>
 
@@ -800,7 +819,7 @@
                 if (tabName === 'today') loadTodayData();
                 else if (tabName === 'week') loadWeekReport();
                 else if (tabName === 'month') loadMonthReport();
-                else if (tabName === 'camera') { loadCameraStatus(); loadCaptureImages('temp'); }
+                else if (tabName === 'camera') { loadCameraStatus(); loadCaptureImages('temp'); loadPresenceStatus(); }
                 else if (tabName === 'audio') loadAudioStatus();
             });
         });
@@ -1396,6 +1415,7 @@
             const btnStart = document.getElementById('btnAudioStart');
             const btnStop = document.getElementById('btnAudioStop');
             const btnAsr = document.getElementById('btnAsrToggle');
+            const btnSound = document.getElementById('btnSoundToggle');
             const hint = document.getElementById('audioListeningHint');
 
             if (d.listening) {
@@ -1403,14 +1423,20 @@
                 stateText.style.color = 'var(--success)';
                 btnStart.disabled = true;
                 btnStop.disabled = false;
-                btnAsr.disabled = false;
-                hint.textContent = d.asr_enabled ? '🔴 监听+转写中...' : '🔴 监听中（转写已关闭，省算力）';
+                btnAsr.disabled = d.sound_activated;     // 声音触发时禁用手动转写
+                btnSound.disabled = false;
+                let h = '🔴 监听中';
+                if (d.sound_activated) h += '（声音触发' + (d.asr_enabled ? '+转写中' : '') + '）';
+                else if (d.asr_enabled) h += '+转写中';
+                else h += '（转写已关闭）';
+                hint.textContent = h + '...';
             } else {
                 stateText.textContent = '未监听';
                 stateText.style.color = 'var(--danger)';
                 btnStart.disabled = false;
                 btnStop.disabled = true;
                 btnAsr.disabled = true;
+                btnSound.disabled = true;
                 hint.textContent = '';
             }
 
@@ -1426,8 +1452,34 @@
                 btnAsr.textContent = '📝 开启转写';
                 btnAsr.style.background = 'var(--success)';
             }
+            // 声音触发按钮状态
+            if (d.sound_activated) {
+                btnSound.textContent = '🔊 声音触发:开';
+                btnSound.style.background = 'var(--warning)';
+            } else {
+                btnSound.textContent = '🔊 声音触发';
+                btnSound.style.background = 'var(--text-secondary)';
+            }
             modelText.textContent = d.model_loaded ? '已加载' : '加载中/未加载';
             sessionText.textContent = d.session_id || '—';
+        }
+
+        async function toggleSound() {
+            const btn = document.getElementById('btnSoundToggle');
+            const turningOn = !btn.textContent.includes(':开');
+            btn.disabled = true;
+            try {
+                const url = turningOn ? '/api/audio/sound/on' : '/api/audio/sound/off';
+                const resp = await fetch(url, { method: 'POST' });
+                const result = await resp.json();
+                if (!result.success) {
+                    showToast((turningOn ? '开启' : '关闭') + '声音触发失败：' + (result.message || ''), 'error');
+                }
+            } catch (e) {
+                showToast('请求失败', 'error');
+            } finally {
+                loadAudioStatus();
+            }
         }
 
         async function toggleAsr() {
@@ -1631,6 +1683,62 @@
             }
         }
 
+        // ===== Presence Detection =====
+        async function loadPresenceStatus() {
+            try {
+                const resp = await fetch('/api/camera/presence/status');
+                const result = await resp.json();
+                if (!result.success) return;
+                updatePresenceUI(result.data);
+            } catch (e) { /* ignore */ }
+        }
+
+        function updatePresenceUI(d) {
+            const btn = document.getElementById('btnPresenceToggle');
+            const state = document.getElementById('presenceStateText');
+            const rate = document.getElementById('presenceRateText');
+            const latest = document.getElementById('presenceLatestText');
+            if (d.running) {
+                btn.textContent = '⏹ 停止在场检测';
+                btn.style.background = 'var(--danger)';
+                state.textContent = '运行中';
+                state.style.color = 'var(--success)';
+            } else {
+                btn.textContent = '👁 开启在场检测';
+                btn.style.background = 'var(--primary)';
+                state.textContent = '未运行';
+                state.style.color = 'var(--text-secondary)';
+            }
+            rate.textContent = d.presence_rate != null ? `${d.presence_rate}%` : '—';
+            if (d.latest) {
+                const p = d.latest.present ? '🟢 在场' : '⚪ 离场';
+                latest.innerHTML = `${p}（人脸${d.latest.face_count}）@ ${d.latest.timestamp}`;
+            } else {
+                latest.textContent = '—';
+            }
+        }
+
+        async function togglePresence() {
+            const btn = document.getElementById('btnPresenceToggle');
+            const turningOn = btn.textContent.includes('开启');
+            btn.disabled = true;
+            try {
+                const url = turningOn ? '/api/camera/presence/on' : '/api/camera/presence/off';
+                const resp = await fetch(url, { method: 'POST' });
+                const result = await resp.json();
+                if (!result.success) {
+                    showToast((turningOn ? '开启' : '停止') + '失败：' + (result.message || ''), 'error');
+                } else {
+                    showToast(turningOn ? '在场检测已开启（每10秒检测）' : '在场检测已停止', 'success');
+                }
+            } catch (e) {
+                showToast('请求失败', 'error');
+            } finally {
+                btn.disabled = false;
+                loadPresenceStatus();
+            }
+        }
+
         // ===== Footer Year =====
         document.getElementById('footerYear').textContent = new Date().getFullYear();
 
@@ -1641,6 +1749,7 @@
             // 图表延迟 1 秒加载，避免首次打开页面时并发请求过多导致卡顿
             initDateSelectors();
             setInterval(checkStatus, 15000);
+            setInterval(loadPresenceStatus, 11000);  // 在场检测状态轮询（与检测周期同步）
         });
     </script>
 </body>

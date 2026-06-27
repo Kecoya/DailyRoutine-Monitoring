@@ -30,6 +30,7 @@ from config import (
     AUDIO_ASR_MODELS_DIR, AUDIO_MODEL_DIR,
     AUDIO_PARTIAL_RESULTS,
     AUDIO_SESSIONS_DIR, AUDIO_DEVICE,
+    AUDIO_SOUND_TRIGGER, AUDIO_SOUND_COOLDOWN,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,10 @@ class AudioService:
         # 关闭时：只采集+推流（低开销）；开启时：额外加载模型并实时识别
         self.asr_enabled = False
         self._asr_lock = threading.Lock()
+
+        # 声音触发模式：检测到较大声音自动开转写，静音超时自动关（省算力）
+        self.sound_activated = False
+        self._last_loud_ts = 0.0
 
         # SSE 订阅者
         self._subscribers = []
@@ -247,6 +252,7 @@ class AudioService:
                 pass
             self._recognizer = None
         self.asr_enabled = False
+        self.sound_activated = False
 
         logger.info("音频监听已停止")
         self._broadcast('status', self.get_status())
@@ -307,6 +313,80 @@ class AudioService:
         self._broadcast('asr_state', {'enabled': False})
         return {'success': True}
 
+    # ================================================================
+    #  声音触发模式（自动开关转写，省算力）
+    # ================================================================
+
+    def enable_sound_activated(self):
+        """开启声音触发模式：检测到较大声音自动开转写，静音超时自动关。"""
+        if not self.is_listening:
+            return {'success': False, 'message': '请先开始监听'}
+        if self.sound_activated:
+            return {'success': False, 'message': '声音触发已开启'}
+        # 预加载模型，使后续自动开启瞬时完成（识别器创建很快）
+        try:
+            self._ensure_model()
+        except Exception as e:
+            return {'success': False, 'message': f'模型加载失败：{e}'}
+        self.sound_activated = True
+        self._last_loud_ts = 0.0
+        logger.info("声音触发模式已开启（检测到声音将自动转写）")
+        self._broadcast('status', self.get_status())
+        return {'success': True}
+
+    def disable_sound_activated(self):
+        """关闭声音触发模式（不影响手动转写开关）。"""
+        if not self.sound_activated:
+            return {'success': False, 'message': '声音触发未开启'}
+        self.sound_activated = False
+        # 若转写是被自动开启的，一并关闭
+        if self.asr_enabled:
+            self.disable_asr()
+        logger.info("声音触发模式已关闭")
+        self._broadcast('status', self.get_status())
+        return {'success': True}
+
+    def _auto_enable_asr(self):
+        """声音触发：自动开启转写（工作线程调用）。模型已预加载，仅创建识别器。"""
+        with self._asr_lock:
+            if self.asr_enabled:
+                return
+            try:
+                from vosk import KaldiRecognizer
+                self._recognizer = KaldiRecognizer(self._model, AUDIO_SAMPLE_RATE)
+                self._utterance_chunks = []
+                self._in_utterance = False
+                self._utterance_start = None
+                self.asr_enabled = True
+            except Exception as e:
+                logger.error(f"自动开启转写失败：{e}")
+                return
+        logger.info("检测到声音，转写已自动开启")
+        self._broadcast('status', self.get_status())
+        self._broadcast('asr_state', {'enabled': True, 'auto': True})
+
+    def _auto_disable_asr(self):
+        """声音触发：静音超时自动关闭转写（工作线程调用）。"""
+        with self._asr_lock:
+            if not self.asr_enabled:
+                return
+            if self._recognizer is not None:
+                try:
+                    final = json.loads(self._recognizer.FinalResult())
+                    text = (final.get('text') or '').strip()
+                    if text:
+                        self._commit_utterance(text)
+                except Exception:
+                    pass
+                self._recognizer = None
+            self._utterance_chunks = []
+            self._in_utterance = False
+            self._utterance_start = None
+            self.asr_enabled = False
+        logger.info("静音超时，转写已自动关闭")
+        self._broadcast('status', self.get_status())
+        self._broadcast('asr_state', {'enabled': False, 'auto': True})
+
     @staticmethod
     def _check_sounddevice():
         try:
@@ -347,7 +427,21 @@ class AudioService:
             except Exception as e:
                 logger.error(f"推送音频流失败：{e}")
 
-            # 2) 喂给 Vosk（仅当转写开启时；关闭时只采集+推流，省算力）
+            # 2) 计算 RMS（极轻量）—— 用于声音触发判定
+            chunk_arr = chunk.astype(np.float32)
+            rms = float(np.sqrt(np.mean(chunk_arr * chunk_arr)) / 32768.0)
+
+            # 3) 声音触发模式：有较大声音→自动开转写；静音超时→自动关
+            if self.sound_activated:
+                now = time.monotonic()
+                if rms >= AUDIO_SOUND_TRIGGER:
+                    self._last_loud_ts = now
+                    if not self.asr_enabled:
+                        self._auto_enable_asr()
+                elif self.asr_enabled and (now - self._last_loud_ts) > AUDIO_SOUND_COOLDOWN:
+                    self._auto_disable_asr()
+
+            # 4) 喂给 Vosk（仅当转写开启时；关闭时只采集+推流，省算力）
             rec = self._recognizer
             if not self.asr_enabled or rec is None:
                 continue
@@ -441,6 +535,7 @@ class AudioService:
             'enabled': True,
             'listening': self.is_listening,
             'asr_enabled': self.asr_enabled,
+            'sound_activated': self.sound_activated,
             'session_id': self.session_id,
             'session_dir': self.session_dir,
             'model_loaded': self._model_loaded,
