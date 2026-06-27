@@ -696,9 +696,10 @@
             <div class="exclusion-info" style="margin-bottom: 16px;">
                 <h4>ℹ️ 使用说明</h4>
                 <p style="color: #92400e; font-size: 0.9em; line-height: 1.8;">
-                    点击「开始监听」后，本机麦克风音频会实时推送到浏览器（可听到现场声音），同时本地 faster-whisper 模型将语音转为中文显示在下方。
+                    点击「开始监听」后，本机麦克风音频会实时推送到浏览器（可听到现场声音），同时本地 Vosk 中文模型将语音转写显示在下方。
                     每段语音会保存为 WAV 文件，转写文本汇总保存到 <code>transcript.txt</code>。
-                    <strong>本地识别，不上传任何音频。</strong>识别模型首次使用需联网下载（约480MB，仅一次）。
+                    <strong>本地识别，不上传任何音频。</strong>首次使用需下载 Vosk 中文模型（约42MB，仅一次）。
+                    <br><strong>听不到声音？</strong>请确认下方「输入电平」条在你说话时有跳动（有跳动=麦克风正常，问题在播放；不跳动=麦克风未采到声音）。
                 </p>
             </div>
 
@@ -706,6 +707,25 @@
                 <button class="btn" id="btnAudioStart" onclick="startListening()">🎙️ 开始监听</button>
                 <button class="btn" id="btnAudioStop" onclick="stopListening()" disabled style="background:var(--danger);">⏹ 停止监听</button>
                 <span id="audioListeningHint" style="color:var(--text-secondary);font-size:0.9em;"></span>
+            </div>
+
+            <div class="report-summary" style="margin-bottom: 16px;">
+                <h3>🔊 音频监听控制</h3>
+                <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:0.9em;color:var(--text-secondary);">输入电平:</span>
+                        <div style="width:200px; height:14px; background:var(--border); border-radius:7px; overflow:hidden;">
+                            <div id="audioLevelBar" style="width:0%; height:100%; background:linear-gradient(90deg,var(--success),var(--warning),var(--danger)); transition:width 0.05s;"></div>
+                        </div>
+                        <span id="audioLevelText" style="font-size:0.8em;color:var(--text-secondary);min-width:36px;">0%</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <label style="font-size:0.9em;color:var(--text-secondary);">音量:</label>
+                        <input type="range" id="audioVolume" min="0" max="3" step="0.1" value="1.5" style="width:120px;" oninput="setAudioVolume(this.value)">
+                        <span id="audioVolumeText" style="font-size:0.8em;color:var(--text-secondary);">1.5×</span>
+                    </div>
+                    <button class="btn btn-secondary" id="btnTestTone" onclick="playTestTone()" style="padding:6px 14px;font-size:0.85em;">🔔 测试播放</button>
+                </div>
             </div>
 
             <div class="chart-container" style="text-align:left;">
@@ -1302,8 +1322,34 @@
 
         // ===== Audio Monitoring =====
         let audioCtx = null;        // Web Audio 播放上下文
+        let audioGainNode = null;   // 音量增益节点
         let nextPlayTime = 0;       // 下一块音频的计划播放时刻（无缝拼接）
         let audioEventSource = null; // SSE 连接
+        let audioVolume = 1.5;      // 播放音量倍数（默认放大以补偿低信号）
+        let AUDIO_PLAYBACK_SR = 16000; // 实际创建 buffer 的采样率（跟随上下文）
+
+        // 建立/恢复音频上下文与增益节点（在用户手势内调用）
+        function ensureAudioContext() {
+            if (audioCtx) {
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                return true;
+            }
+            try {
+                const AC = window.AudioContext || window.webkitAudioContext;
+                try { audioCtx = new AC({ sampleRate: 16000 }); }
+                catch (e) { audioCtx = new AC(); } // 不支持 16k 时回退默认
+                AUDIO_PLAYBACK_SR = audioCtx.sampleRate;
+                audioGainNode = audioCtx.createGain();
+                audioGainNode.gain.value = audioVolume;
+                audioGainNode.connect(audioCtx.destination);
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                console.log('[audio] AudioContext sr=' + AUDIO_PLAYBACK_SR + ' state=' + audioCtx.state);
+                return true;
+            } catch (e) {
+                console.error('[audio] 建立上下文失败', e);
+                return false;
+            }
+        }
 
         async function loadAudioStatus() {
             try {
@@ -1338,27 +1384,78 @@
             sessionText.textContent = d.session_id || '—';
         }
 
-        // 解码 base64 int16 PCM → Float32 并无缝播放
+        // 解码 base64 int16 PCM → Float32，更新输入电平，并经音量节点无缝播放
         function playAudioChunk(b64) {
-            if (!audioCtx) return;
+            if (!audioCtx) {
+                // 上下文被浏览器挂起或未建：尝试恢复
+                ensureAudioContext();
+                if (!audioCtx) return;
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
             const bytes = atob(b64);
             const sampleCount = bytes.length / 2;
             const i16 = new Int16Array(sampleCount);
+            let sumSq = 0;
             for (let i = 0; i < sampleCount; i++) {
-                i16[i] = bytes.charCodeAt(i * 2) | (bytes.charCodeAt(i * 2 + 1) << 8);
+                const v = bytes.charCodeAt(i * 2) | (bytes.charCodeAt(i * 2 + 1) << 8);
+                // 转有符号 int16
+                const signed = v > 32767 ? v - 65536 : v;
+                i16[i] = signed;
+                sumSq += signed * signed;
             }
+            // 输入电平（RMS），用于诊断麦克风是否采到声音
+            const rms = Math.sqrt(sumSq / sampleCount) / 32768;
+            updateAudioLevel(rms);
+
             const f32 = new Float32Array(sampleCount);
             for (let i = 0; i < sampleCount; i++) f32[i] = i16[i] / 32768;
 
-            const buf = audioCtx.createBuffer(1, sampleCount, 16000);
+            // 用音频上下文原生采样率创建 buffer，避免重采样问题
+            const buf = audioCtx.createBuffer(1, sampleCount, AUDIO_PLAYBACK_SR);
             buf.getChannelData(0).set(f32);
             const src = audioCtx.createBufferSource();
             src.buffer = buf;
-            src.connect(audioCtx.destination);
+            src.connect(audioGainNode);
             // 无缝拼接：在上一块结束或当前时刻之后播放
             const startAt = Math.max(audioCtx.currentTime + 0.02, nextPlayTime);
-            src.start(startAt);
+            try { src.start(startAt); } catch (e) {}
             nextPlayTime = startAt + buf.duration;
+        }
+
+        function updateAudioLevel(rms) {
+            const pct = Math.min(100, Math.round(rms * 200));
+            const bar = document.getElementById('audioLevelBar');
+            const txt = document.getElementById('audioLevelText');
+            if (bar) bar.style.width = pct + '%';
+            if (txt) txt.textContent = pct + '%';
+        }
+
+        function setAudioVolume(v) {
+            audioVolume = parseFloat(v);
+            if (audioGainNode) audioGainNode.gain.value = audioVolume;
+            const t = document.getElementById('audioVolumeText');
+            if (t) t.textContent = audioVolume.toFixed(1) + '×';
+        }
+
+        // 播放一个短测试音（正弦波），用于隔离「播放」是否正常工作
+        function playTestTone() {
+            ensureAudioContext();
+            if (!audioCtx) { showToast('音频上下文初始化失败', 'error'); return; }
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const sr = audioCtx.sampleRate;
+            const dur = 0.5;
+            const buf = audioCtx.createBuffer(1, sr * dur, sr);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < data.length; i++) {
+                data[i] = 0.3 * Math.sin(2 * Math.PI * 440 * i / sr);
+            }
+            const src = audioCtx.createBufferSource();
+            src.buffer = buf;
+            src.connect(audioGainNode || audioCtx.destination);
+            src.start();
+            showToast('测试音播放中（应听到440Hz蜂鸣）', 'success');
         }
 
         function appendTranscript(d) {
@@ -1398,12 +1495,12 @@
 
         async function startListening() {
             clearTranscriptPlaceholder();
+            // 先初始化音频上下文（用户手势内，解除浏览器自动播放限制）
+            ensureAudioContext();
             // 先建立 SSE 订阅（避免漏掉开头音频）
             try {
                 audioEventSource = new EventSource('/api/audio/stream');
-                // 初始化 Web Audio（用户手势内，符合自动播放策略）
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                nextPlayTime = audioCtx.currentTime + 0.1;
+                if (audioCtx) nextPlayTime = audioCtx.currentTime + 0.1;
                 audioEventSource.addEventListener('audio', e => {
                     try { playAudioChunk(JSON.parse(e.data).data); } catch (_) {}
                 });
