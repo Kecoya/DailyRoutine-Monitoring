@@ -6,7 +6,7 @@ import os
 import socket
 import logging
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, make_response
 import threading
 
 from database import Database
@@ -41,8 +41,12 @@ def is_port_in_use(host: str, port: int) -> bool:
 
 @app.route('/')
 def index():
-    """首页"""
-    return render_template('index.html')
+    """首页（禁用缓存，确保浏览器总是拿到最新页面）"""
+    resp = make_response(render_template('index.html'))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 @app.route('/api/status')

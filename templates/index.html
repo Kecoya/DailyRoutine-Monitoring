@@ -698,7 +698,7 @@
 
         <!-- Audio Monitoring -->
         <div id="audio" class="content">
-            <h2>🎙️ 声音监听</h2>
+            <h2>🎙️ 声音监听 <span style="font-size:0.6em;color:var(--text-secondary);font-weight:normal;">[build 2026-06-27-c]</span></h2>
             <div id="audioStatus" class="stats-grid">
                 <div class="stat-card">
                     <div class="label">监听状态</div>
@@ -1528,12 +1528,18 @@
         async function toggleSound() {
             const btn = document.getElementById('btnSoundToggle');
             const turningOn = !btn.textContent.includes(':开');
+            // 即时反馈：先改按钮外观，让用户立刻知道点击生效了
             btn.disabled = true;
+            btn.style.background = turningOn ? 'var(--warning)' : 'var(--text-secondary)';
+            btn.textContent = turningOn ? '🔊 声音触发:开（处理中...）' : '🔊 声音触发（关闭中...）';
+            showToast(turningOn ? '正在开启声音触发...' : '正在关闭声音触发...', 'success');
             try {
                 let url = turningOn ? '/api/audio/sound/on' : '/api/audio/sound/off';
                 if (turningOn) {
-                    const thr = document.getElementById('soundThresholdInput').value || 0.05;
-                    const cd = document.getElementById('soundCooldownInput').value || 3;
+                    const thrEl = document.getElementById('soundThresholdInput');
+                    const cdEl = document.getElementById('soundCooldownInput');
+                    const thr = (thrEl && thrEl.value) ? thrEl.value : 0.05;
+                    const cd = (cdEl && cdEl.value) ? cdEl.value : 3;
                     url += `?threshold=${thr}&cooldown=${cd}`;
                 }
                 const resp = await fetch(url, { method: 'POST' });
@@ -1541,11 +1547,12 @@
                 if (!result.success) {
                     showToast((turningOn ? '开启' : '关闭') + '声音触发失败：' + (result.message || ''), 'error');
                 } else if (turningOn) {
-                    showToast('声音触发已开启：说话时自动转写，静音后自动停（仅保存触发后的音频）', 'success');
+                    showToast('声音触发已开启：说话时自动转写，静音后自动停', 'success');
                 }
             } catch (e) {
-                showToast('请求失败', 'error');
+                showToast('请求失败：' + e, 'error');
             } finally {
+                btn.disabled = false;
                 loadAudioStatus();
             }
         }
