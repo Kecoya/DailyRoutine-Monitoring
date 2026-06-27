@@ -29,7 +29,7 @@ from config import (
     AUDIO_SAMPLE_RATE, AUDIO_CHANNELS, AUDIO_CHUNK_MS,
     AUDIO_ASR_MODELS_DIR, AUDIO_MODEL_DIR,
     AUDIO_PARTIAL_RESULTS,
-    AUDIO_SESSIONS_DIR,
+    AUDIO_SESSIONS_DIR, AUDIO_DEVICE,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,8 @@ class AudioService:
 
         # sounddevice 输入流
         self.stream = None
+        # 输入设备索引（None=系统默认；可由 Web 界面按需选择）
+        self.device = AUDIO_DEVICE
 
         # 音频块队列（回调 → 工作线程）
         self._audio_queue = None
@@ -148,11 +150,18 @@ class AudioService:
     #  生命周期
     # ================================================================
 
-    def start_listening(self):
+    def start_listening(self, device=None):
         if self.is_listening:
             return {'success': False, 'message': '已在监听中'}
         if not self._check_sounddevice():
             return {'success': False, 'message': '未安装 sounddevice（pip install sounddevice）'}
+
+        # 选择输入设备（参数优先，否则用配置默认）
+        if device is not None:
+            try:
+                self.device = int(device)
+            except (TypeError, ValueError):
+                self.device = None
 
         # 先确保模型可用
         try:
@@ -187,8 +196,11 @@ class AudioService:
                 dtype='int16',
                 blocksize=block,
                 callback=self._audio_callback,
+                device=self.device,
             )
             self.stream.start()
+            dev_name = self._device_name(self.device)
+            logger.info(f"使用输入设备: {dev_name}")
         except Exception as e:
             logger.error(f"打开麦克风失败：{e}", exc_info=True)
             self.is_listening = False
@@ -378,4 +390,41 @@ class AudioService:
             'session_id': self.session_id,
             'session_dir': self.session_dir,
             'model_loaded': self._model_loaded,
+            'device': self.device,
+            'device_name': self._device_name(self.device) if self.is_listening else None,
         }
+
+    # ================================================================
+    #  输入设备
+    # ================================================================
+
+    @staticmethod
+    def _device_name(index):
+        try:
+            import sounddevice as sd
+            if index is None:
+                index = sd.default.device[0]
+            d = sd.query_devices(index)
+            return d.get('name', str(index))
+        except Exception:
+            return str(index) if index is not None else '默认'
+
+    def list_input_devices(self):
+        """列出所有输入设备，供 Web 界面选择"""
+        try:
+            import sounddevice as sd
+            default_in = sd.default.device[0]
+            result = []
+            for i, d in enumerate(sd.query_devices()):
+                if d.get('max_input_channels', 0) > 0:
+                    result.append({
+                        'index': i,
+                        'name': d.get('name', f'设备{i}'),
+                        'channels': d.get('max_input_channels', 0),
+                        'is_default': (i == default_in),
+                    })
+            return result
+        except Exception as e:
+            logger.error(f"枚举输入设备失败：{e}")
+            return []
+

@@ -398,10 +398,17 @@ def get_audio_status():
     return jsonify({'success': True, 'data': audio_service.get_status()})
 
 
+@app.route('/api/audio/devices')
+def list_audio_devices():
+    """列出可用输入设备"""
+    return jsonify({'success': True, 'data': audio_service.list_input_devices()})
+
+
 @app.route('/api/audio/start', methods=['POST'])
 def audio_start():
-    """开始监听"""
-    result = audio_service.start_listening()
+    """开始监听。可选 ?device=<索引> 指定输入设备"""
+    device = request.args.get('device', type=int)
+    result = audio_service.start_listening(device=device)
     return jsonify(result)
 
 

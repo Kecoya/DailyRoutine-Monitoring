@@ -706,6 +706,10 @@
             <div style="margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
                 <button class="btn" id="btnAudioStart" onclick="startListening()">🎙️ 开始监听</button>
                 <button class="btn" id="btnAudioStop" onclick="stopListening()" disabled style="background:var(--danger);">⏹ 停止监听</button>
+                <label style="font-size:0.9em;color:var(--text-secondary);">输入设备:</label>
+                <select id="audioDeviceSelect" style="padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:0.9em;max-width:280px;">
+                    <option value="">系统默认</option>
+                </select>
                 <span id="audioListeningHint" style="color:var(--text-secondary);font-size:0.9em;"></span>
             </div>
 
@@ -1356,6 +1360,26 @@
                 const resp = await fetch('/api/audio/status');
                 const result = await resp.json();
                 if (result.success) updateAudioUI(result.data);
+                await loadAudioDevices();
+            } catch (e) { /* ignore */ }
+        }
+
+        async function loadAudioDevices() {
+            try {
+                const resp = await fetch('/api/audio/devices');
+                const result = await resp.json();
+                if (!result.success) return;
+                const sel = document.getElementById('audioDeviceSelect');
+                if (!sel) return;
+                const cur = sel.value;
+                sel.innerHTML = '<option value="">系统默认</option>';
+                result.data.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d.index;
+                    opt.textContent = `[${d.index}] ${d.name}${d.is_default ? ' (默认)' : ''}`;
+                    sel.appendChild(opt);
+                });
+                if (cur) sel.value = cur;
             } catch (e) { /* ignore */ }
         }
 
@@ -1518,9 +1542,12 @@
                 showToast('建立实时连接失败', 'error');
                 return;
             }
-            // 再启动服务端监听
+            // 再启动服务端监听（带选定的输入设备）
             try {
-                const resp = await fetch('/api/audio/start', { method: 'POST' });
+                const devSel = document.getElementById('audioDeviceSelect');
+                const device = devSel ? devSel.value : '';
+                const url = '/api/audio/start' + (device ? `?device=${device}` : '');
+                const resp = await fetch(url, { method: 'POST' });
                 const result = await resp.json();
                 if (result.success) {
                     showToast('监听已开始', 'success');
